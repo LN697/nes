@@ -2,6 +2,7 @@
 
 #include "cstdint"
 #include "vector"
+#include "common.hpp"
 
 
 // This class is a byte addressed memory structure.
