@@ -1,0 +1,2 @@
+Add support for size bound registers. All invalid operations should through exceptions.
+MOS 6502 vs. NES 6502 - Decimal flag ignored in arithmetic operations in NES version. 

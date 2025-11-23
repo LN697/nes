@@ -1,18 +1,20 @@
 #pragma once
 
 #include "logger.hpp"
+#include "common.hpp"
 
-#include "register.hpp"
 #include "memory.hpp"
 
-enum class Phase { FETCH, OPR_FETCH, READ, OPERATION, WRITE, INTERRUPT };
+enum class Phase { STANDBY, FETCH, OPR_FETCH, READ, OPERATION, WRITE, INTERRUPT };
 
 class CoreBase {
-    private:
+    protected:
         Phase core_phase;
         Memory* memory;
 
     public:
-        
+        CoreBase(Memory* memory);
+        virtual ~CoreBase();
 
+        virtual void step();
 };
