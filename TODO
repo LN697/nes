@@ -1,2 +1,4 @@
-Add support for size bound registers. All invalid operations should through exceptions.
-MOS 6502 vs. NES 6502 - Decimal flag ignored in arithmetic operations in NES version. 
+Add support for size bound registers. All invalid operations should throw exceptions.
+MOS 6502 vs. NES 6502 - Decimal flag ignored in arithmetic operations in NES version.
+Add python based test loader.
+Add SDL2 I/O support and Vulkan based rendering pipeline.
