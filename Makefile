@@ -8,8 +8,8 @@ CXXFLAGS := -Wall -Wextra $(STD)
 INC_DIRS := $(shell find . -type d -name include 2>/dev/null | sed 's|^./||')
 CPPFLAGS := $(patsubst %,-I%,$(INC_DIRS))
 
-# collect all .cpp sources (skip build dir)
-SRCS := $(shell find . -name '*.cpp' ! -path './build/*' -print | sed 's|^./||')
+# collect all .cpp sources (skip build dir and tests/testbench.cpp to avoid duplicate mains)
+SRCS := $(shell find . -name '*.cpp' ! -path './build/*' ! -path './tests/*' -print | sed 's|^./||')
 
 # place objects under build/ preserving directory structure
 OBJS := $(patsubst %.cpp,build/%.o,$(SRCS))
@@ -39,4 +39,18 @@ show:
 clean:
 	@echo Cleaning build artifacts
 	@rm -rf build/ $(TARGET)
+
+# Build the standalone testbench helper (separate from the main nes target)
+.PHONY: testbench
+testbench:
+	@echo Compiling testbench
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) \
+		cpu/src/core_base.cpp cpu/src/core.cpp cpu/src/memory.cpp cpu/src/register.cpp utility/src/logger.cpp tests/testbench.cpp \
+		-o tests/testbench
+
+# Clean the testbench binary
+.PHONY: clean-testbench
+clean-testbench:
+	@echo Removing compiled testbench
+	@rm -f tests/testbench
 

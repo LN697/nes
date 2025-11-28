@@ -1,0 +1,21 @@
+commmon
+    - contains basic defines and typedefs used across the project 
+
+core_base
+    - contains a modular base class for CPU core functionalities
+
+core_policies
+    - contains core specific policies implementations using templates to emulate CPU instructions 
+    - IMPLICIT, IMMEDIATE, ZERO PAGE, ZERO PAGE X, ZERO PAGE Y, ABSOLUTE, ABSOLUTE X, ABSOLUTE Y, INDIRECT, INDIRECT X, INDIRECT Y, RELATIVE, ACCUMULATOR
+    - READ - LDA, LDX, ADC, AND, BRK
+    - WRITE - A, X, Y
+    - RMW - INC, ASL
+
+core
+    - contains the main CPU core implementation
+
+memory
+    - contains memory management and emulation components
+
+register
+    - contains CPU register definitions and utilities

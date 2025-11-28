@@ -21,7 +21,7 @@ Core::Core(Memory* memory)
 {
     core_phase = Phase::STANDBY;
 
-    log("CORE", "Core [" + std::to_string(core_id) + "] initialized in " + std::to_string(static_cast<int>(core_phase)) + " phase.");
+    log("CORE", "Core [" + std::to_string(core_id) + "] initialized in phase " + std::to_string(static_cast<int>(core_phase)) + ".");
 }
 
 Core::~Core() = default;
@@ -31,12 +31,25 @@ void Core::init() {
     log("CORE", "Core [" + std::to_string(core_id) + "] initialized. PC set to: " + std::to_string(pc.getValue()));
 }
 
-void Core::step() {
-    if (core_phase != Phase::ERROR) {
-        log("CORE", "Stepping core [" + std::to_string(core_id) + "]");
-    } else {
-        log("CORE", "Core [" + std::to_string(core_id) + "] halting due to error.");
-        exit(1);
+void Core::step(int ops = 1) {
+    for (int i = 0; i < ops; ++i) {
+        if (core_phase != Phase::ERROR) {
+            log("CORE", "Stepping core [" + std::to_string(core_id) + "] operation " + std::to_string(i + 1) + " of " + std::to_string(ops) + ".");
+            uint8_t opcode = fetch();
+            log("CORE", "Core [" + std::to_string(core_id) + "] fetched opcode: " + std::to_string(opcode) + ".");
+
+            OpHandler handler = instr_table[opcode];
+            if (handler) {
+                handler(*this);
+                log("CORE", "Core [" + std::to_string(core_id) + "] executed opcode: " + std::to_string(opcode) + ".");
+            } else {
+                log("CORE", "Core [" + std::to_string(core_id) + "] encountered unimplemented opcode: " + std::to_string(opcode) + ". Transitioning to ERROR phase.");
+                core_phase = Phase::ERROR;
+            }
+        } else {
+            log("CORE", "Core [" + std::to_string(core_id) + "] halting due to error.");
+            break;
+        }
     }
 }
 

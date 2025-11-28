@@ -30,7 +30,7 @@ int main() {
 
     Memory mem(64 * KB); // 64KB memory
     // Initialize memory for some basic operations if needed
-    mem.setMemory(0x0000, 0x01); // Example initial value for PC
+    mem.setMemory(0x0000, 0x00); // Example initial value for PC
 
     Core core(&mem);
 

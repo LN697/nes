@@ -26,7 +26,7 @@ class Core : public CoreBase {
 
         ~Core() override;
 
-        void step() override;
+        void step(int ops) override;
         void run() override;
         void init() override;
 

@@ -23,7 +23,7 @@ class CoreBase {
 
         virtual ~CoreBase();
 
-        virtual void step();
+        virtual void step(int ops);
         virtual void run();
         virtual void init();
 };
