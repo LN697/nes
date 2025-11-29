@@ -1,7 +1,6 @@
 #include "logger.hpp"
 
 #include "memory.hpp"
-#include "stdexcept"
 
 Memory::Memory(int size_bytes) : size_bytes(size_bytes) {
     memory.resize(size_bytes);
@@ -13,7 +12,8 @@ Memory::~Memory() = default;
 std::uint8_t Memory::getMemory(int address) const {
     if (address < 0 || address >= size_bytes) {
         log("MEMORY", "Attempted to read from invalid memory address: " + std::to_string(address));
-        throw std::out_of_range("Memory read address out of range");
+        log("MEMORY", "FAIL");
+        return 0;
     }
     return memory[address];
 }

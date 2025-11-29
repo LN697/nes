@@ -49,29 +49,31 @@ bool Register::getBit(int position) const {
 }
 
 void Register::setValue(std::uint64_t val) {
-    // Create a mask for the valid bit range of the register
-    // For a size of 8, the mask is 0xFF. For 16, 0xFFFF, etc.
-    std::uint64_t max_val = (size >= 64) ? std::numeric_limits<std::uint64_t>::max() : ((1ULL << size) - 1);
+    // 1. Calculate the Mask
+    // (Optimization Tip: Calculate this once in the Constructor and store it as `uint64_t mask`)
+    std::uint64_t mask = (size >= 64) ? std::numeric_limits<std::uint64_t>::max() : ((1ULL << size) - 1);
 
-    if (val > max_val) {
-        throw std::out_of_range("Value " + std::to_string(val) + " exceeds register " + *name + " size of " + std::to_string(size) + " bits (max value: " + std::to_string(max_val) + ").");
-    }
-    value = val;
-    log("REGISTER", "Set value of register " + *name + ". New value: " + std::to_string(value) + ".");
+    // 2. The "Hardware" Logic
+    // Instead of checking bounds, we force the value to fit.
+    // If val is 0xFFFFFFFFFFFFFFFF (from 0 - 1 underflow) and size is 8 (mask 0xFF),
+    // this operation turns it into 0x00000000000000FF.
+    value = val & mask;
+
+    // Optional: Log only if debug is enabled, otherwise this spams the console
+    log("REGISTER", "Set " + *name + " to " + std::to_string(value));
 }
 
 void Register::andValue(std::uint64_t val) {
-    // Ensure the `and` operation also respects the size of the register.
-    // The result should not exceed the max_val for the register's size.
-    std::uint64_t max_val = (size >= 64) ? std::numeric_limits<std::uint64_t>::max() : ((1ULL << size) - 1);
-    std::uint64_t result = value & val;
-
-    if (result > max_val) {
-        // This case should ideally not be hit if `val` and `value` are already within bounds
-        // but as a safeguard, we could truncate or throw.
-        // For now, let's just log a warning or adjust if this becomes an issue.
-        log("WARN", "AND operation resulted in a value exceeding register size, but will be masked. Result: " + std::to_string(result));
-    }
-    value = result & max_val; // Ensure the value remains within the register's bit size
-    log("REGISTER", "Performed AND operation on register " + *name + ". New value: " + std::to_string(value) + ".");
+    // 1. Logic Check
+    // A bitwise AND can NEVER increase a value. 
+    // If 'value' is currently 255, 'value & anything' cannot be > 255.
+    // So the bounds check here was actually mathematically impossible to trigger!
+    
+    value &= val; 
+    
+    // Safety mask (only needed if you suspect 'value' was already corrupt)
+    std::uint64_t mask = (size >= 64) ? std::numeric_limits<std::uint64_t>::max() : ((1ULL << size) - 1);
+    value &= mask;
+    
+    log("REGISTER", "AND " + *name + " result: " + std::to_string(value));
 }

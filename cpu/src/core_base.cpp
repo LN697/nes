@@ -5,6 +5,7 @@ CoreBase::CoreBase(Memory* memory) : core_phase(Phase::STANDBY), memory(memory),
 CoreBase::~CoreBase() = default;
 
 void CoreBase::step(int ops) {
+    (void)ops;
     // Base step does nothing; derived classes should override if needed.
 }
 

@@ -26,9 +26,10 @@ class Core : public CoreBase {
 
         ~Core() override;
 
-        void step(int ops) override;
+        void step(int ops = 1) override;
         void run() override;
         void init() override;
+        void initPolicies(Core &core);
 
         std::uint8_t read(std::uint16_t address) const;
         void write(std::uint16_t address, std::uint8_t value);

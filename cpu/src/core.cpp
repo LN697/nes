@@ -27,11 +27,11 @@ Core::Core(Memory* memory)
 Core::~Core() = default;
 
 void Core::init() {
-    pc.setValue(memory->getMemory(0x0000)); // Loading dummy data for testing
+    pc.setValue(memory->getMemory(0xFFFC) | (memory->getMemory(0xFFFD) << 8));
     log("CORE", "Core [" + std::to_string(core_id) + "] initialized. PC set to: " + std::to_string(pc.getValue()));
 }
 
-void Core::step(int ops = 1) {
+void Core::step(int ops) {
     for (int i = 0; i < ops; ++i) {
         if (core_phase != Phase::ERROR) {
             log("CORE", "Stepping core [" + std::to_string(core_id) + "] operation " + std::to_string(i + 1) + " of " + std::to_string(ops) + ".");
@@ -55,9 +55,6 @@ void Core::step(int ops = 1) {
 
 void Core::run() {
     init();
-    for (int i = 0x00 ; i < 0x0020; ++i) {
-        step();
-    }
 }
 
 std::uint8_t Core::read(std::uint16_t address) const {
