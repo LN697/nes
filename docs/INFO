@@ -5,17 +5,18 @@ core_base
     - contains a modular base class for CPU core functionalities
 
 core_policies
-    - contains core specific policies implementations using templates to emulate CPU instructions 
-    - IMPLICIT, IMMEDIATE, ZERO PAGE, ZERO PAGE X, ZERO PAGE Y, ABSOLUTE, ABSOLUTE X, ABSOLUTE Y, INDIRECT, INDIRECT X, INDIRECT Y, RELATIVE, ACCUMULATOR
-    - READ - LDA, LDX, ADC, AND, BRK
-    - WRITE - A, X, Y
-    - RMW - INC, ASL
+    - contains core specific policies implementations using templates to emulate CPU instructions
 
 core
     - contains the main CPU core implementation
 
 memory
     - contains memory management and emulation components
+    - 2KB SRAM (WRAM) + 62KB memory mapped components (PPU, APU, ...) = 64KB address space (16-bit addr field)
+    - only 49120 bytes of the cartridge data can be accessed, for e.g., "Super Mario Bros" 32KB Program ROM, 8KB Character ROM = 40KB, + 3KB WRAM
 
 register
     - contains CPU register definitions and utilities
+
+ppu
+    - 

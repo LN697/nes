@@ -1,2 +1,0 @@
-Implement the PPU and the bus architecture.
-Add SDL2 I/O support and Vulkan based rendering pipeline.

@@ -1,16 +1,25 @@
 #pragma once
 
-#include "core_base.hpp"
-#include "register.hpp"
-
+#include <cstdint>
+#include <string>
 #include <array>
 #include <functional>
 
+#include "register.hpp"
+#include "logger.hpp"
+#include "bus.hpp"
+
+enum class Phase { STANDBY, FETCH, OPR_FETCH, READ, OPERATION, WRITE, INTERRUPT, ERROR };
+
 class Core;
 
-using OpHandler = void(*)(Core&);
+using OpHandler = std::function<void(Core&)>;
 
-class Core : public CoreBase {
+class Core {
+    private:
+        Bus* bus;
+        Phase core_phase;
+
     public:
         Register a;
         Register x;
@@ -18,35 +27,35 @@ class Core : public CoreBase {
         Register s;
         Register pc;
         Register p;
-
+        
         std::array<OpHandler, 256> instr_table;
-
-    public:
-        Core(Memory* memory);
-
-        ~Core() override;
-
-        void step(int ops = 1) override;
-        void run() override;
-        void init() override;
-        void initPolicies(Core &core);
-
-        std::uint8_t read(std::uint16_t address) const;
-        void write(std::uint16_t address, std::uint8_t value);
-        std::uint8_t fetch();
-        std::uint16_t fetchWord();
-
+        
         enum class StatusFlag {
             C = 0, // Carry
             Z = 1, // Zero
             I = 2, // Interrupt Disable
-            D = 3, // Decimal (ignored on NES)
+            D = 3, // Decimal
             B = 4, // Break
             U = 5, // Unused
             V = 6, // Overflow
             N = 7  // Negative
         };
 
+        explicit Core(Bus* bus);
+        virtual ~Core();
+
+        void init();
+        void run();
+        void step();
+        
+        std::uint8_t read(std::uint16_t address) const;
+        void write(std::uint16_t address, std::uint8_t value);
+        
+        std::uint8_t fetch();
+        std::uint16_t fetchWord();
+        
         void setStatusFlag(StatusFlag flag, bool value);
         bool getStatusFlag(StatusFlag flag) const;
+        
+        int core_id = 0;
 };

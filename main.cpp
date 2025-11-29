@@ -7,22 +7,18 @@
 #include <thread>
 #include <chrono>
 
-#include "memory.hpp"
+#include "bus.hpp"
 #include "core.hpp"
 #include "core_policies.hpp"
 #include "policies_map.hpp"
 #include "logger.hpp"
 
-// Global flag for clean exit on Ctrl+C
 volatile std::sig_atomic_t g_signal_received = 0;
 
 void signal_handler(int signal) {
     g_signal_received = signal;
 }
 
-// ============================================================================
-// MAIN ENTRY POINT
-// ============================================================================
 int main(int argc, char** argv) {
     std::string rom_path;
     if (argc > 1) {
@@ -32,133 +28,69 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Initialize Memory (64KB)
-    Memory mem(64 * 1024);
+    // 1. Create the System Bus
+    Bus bus;
 
-    // Load ROM
+    // 2. Load ROM
     std::ifstream file(rom_path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        std::cerr << "Error: Could not open ROM file: " << rom_path << "\n";
+        std::cerr << "Error: Could not open ROM.\n";
         return 1;
     }
-
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
-
-    if (size > 65536) {
-        std::cerr << "Warning: File size (" << size << ") larger than 64KB memory. Truncating.\n";
-    }
-
     std::vector<char> buffer(size);
+    
     if (file.read(buffer.data(), size)) {
-        // ROM Loading Logic
-        // 1. Check for iNES Header ("NES" followed by 0x1A)
-        bool is_ines = false;
-        if (size >= 16 && buffer[0] == 'N' && buffer[1] == 'E' && buffer[2] == 'S' && buffer[3] == 0x1A) {
-            is_ines = true;
-        }
-
+        // iNES Parsing
+        bool is_ines = (size >= 16 && buffer[0] == 'N' && buffer[1] == 'E' && buffer[2] == 'S' && buffer[3] == 0x1A);
+        
         if (is_ines) {
-            // iNES Loader (Basic NROM support)
-            // PRG ROM size in 16KB units is at offset 4
             int prg_chunks = buffer[4];
             int prg_size = prg_chunks * 16384;
+            int offset = 16 + ((buffer[6] & 0x04) ? 512 : 0); // Skip header + trainer
             
-            std::cout << "[Loader] Detected iNES Header. PRG-ROM Size: " << prg_size << " bytes.\n";
-
-            // Load PRG-ROM into memory. 
-            // NROM-128 (1 chunk): Mapped to $8000 and mirrored at $C000.
-            // NROM-256 (2 chunks): Mapped to $8000.
-            int load_addr = 0x8000;
+            std::cout << "[Loader] Loading iNES ROM. PRG Size: " << prg_size << " bytes.\n";
             
-            // iNES header is 16 bytes. Trainer is 512 bytes if bit 2 of byte 6 is set.
-            int offset = 16;
-            if (buffer[6] & 0x04) {
-                offset += 512;
+            std::vector<uint8_t> prgData;
+            prgData.resize(prg_size);
+            for(int i=0; i<prg_size; i++) {
+                if(offset + i < size) prgData[i] = buffer[offset + i];
             }
-
-            // Safety check
-            if (offset + prg_size > size) {
-                std::cerr << "Error: Unexpected end of file reading PRG-ROM.\n";
-                return 1;
-            }
-
-            for (int i = 0; i < prg_size; ++i) {
-                if (load_addr + i < 65536) {
-                    mem.setMemory(load_addr + i, static_cast<uint8_t>(buffer[offset + i]));
-                }
-            }
-
-            // Mirroring for NROM-128
-            if (prg_chunks == 1) {
-                std::cout << "[Loader] Mirroring 16KB PRG-ROM from $8000 to $C000.\n";
-                for (int i = 0; i < 16384; ++i) {
-                    mem.setMemory(0xC000 + i, mem.getMemory(0x8000 + i));
-                }
-            }
+            
+            // FIX: Pass the mirroring flag (True if 16KB NROM-128, False if 32KB NROM-256)
+            bool mirror = (prg_chunks == 1);
+            bus.loadROM(prgData, mirror);
 
         } else {
-            // Raw Binary Loader
-            // If file is exactly 64KB, load at 0.
-            // If file is small (e.g. 4KB test rom), usage convention varies.
-            // For safety in "whole opcodes" context, usually implies a flat 64k dump.
-            std::cout << "[Loader] Loading raw binary at $0000.\n";
-            for (int i = 0; i < size && i < 65536; ++i) {
-                mem.setMemory(i, static_cast<uint8_t>(buffer[i]));
-            }
+            std::cout << "[Loader] Loading Raw Binary.\n";
+            std::vector<uint8_t> rawData(size);
+            for(int i=0; i<size; i++) rawData[i] = buffer[i];
+            
+            // For raw binaries, assume 32KB mapping or flat load depending on size
+            // Passing false for mirror as default
+            bus.loadROM(rawData, false);
         }
-    } else {
-        std::cerr << "Error: Failed to read file.\n";
-        return 1;
     }
 
-    // Initialize Core
-    Core core(&mem);
+    // 3. Create Core attached to Bus
+    Core core(&bus);
     
-    // Initialize Instruction Table
+    // 4. Initialize Tables & Reset
     init_instr_table(core);
+    core.run(); // Triggers Reset Vector fetch
 
-    // Boot CPU
-    core.run(); // sets PC from vector
-
-    // Setup Signal Handler for clean exit
     std::signal(SIGINT, signal_handler);
-
-    // Main Loop
-    std::cout << "[Core] Starting execution at PC: $" << std::hex << core.pc.getValue() << std::dec << "\n";
     
-    auto start_time = std::chrono::high_resolution_clock::now();
-    uint64_t cycles = 0;
+    std::cout << "[System] Engine Started.\n";
 
-    // Use a simplified run loop
+    // 5. Main Execution Loop
     while (g_signal_received == 0) {
-        // Execute one instruction
-        
-        // --- CUSTOM STEP LOGIC FOR MAIN ---
-        // We inline a simplified step() here to allow custom logging if needed
-        // and to avoid the "decimal opcode" logging confusion from Core::step
-        
-        uint8_t opcode = core.fetch();
-        
-        // Optional: Hex logging (Uncomment for debugging)
-        std::cout << "PC:" << std::hex << (core.pc.getValue()-1) << " Op:" << (int)opcode << std::dec << "\n";
-
-        auto handler = core.instr_table[opcode];
-        if (handler) {
-            handler(core);
-        } else {
-            std::cerr << "Error: Unimplemented opcode 0x" << std::hex << (int)opcode << std::dec << "\n";
-            g_signal_received = 1;
-        }
-        
-        cycles++;
+        core.step(); 
+        int cycles_spent = 3; 
+        bus.ppu.step(cycles_spent * 3);
     }
 
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end_time - start_time;
-    
-    std::cout << "\n[Core] Stopped. Executed " << cycles << " instructions in " << elapsed.count() << " seconds.\n";
-    std::cout << "[Core] Speed: " << (cycles / elapsed.count()) / 1000000.0 << " MHz (approx instructions)\n";
-
+    std::cout << "\n[System] Stopped.\n";
     return 0;
 }
