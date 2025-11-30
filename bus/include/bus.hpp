@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cstdint>
 #include <vector>
 #include <array>
@@ -13,6 +14,7 @@ public:
     PPU ppu;
     
     bool testMode = false;
+
     std::vector<uint8_t> testRam;
 
     void setTestMode(bool enabled);

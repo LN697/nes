@@ -1,2 +1,131 @@
-Implement the PPU and the bus architecture.
-Add SDL2 I/O support and Vulkan based rendering pipeline.
+Phase 1: Interaction (The Nervous System)
+Goal: Make the game respond to key presses.
+
+1. Implement Controller I/O ($4016)
+The NES controller is a simple 8-bit Shift Register.
+
+[ ] Create Input Class: Needs to store the state of 8 buttons (A, B, Select, Start, Up, Down, Left, Right).
+
+[ ] Map Memory $4016 (Read): When the CPU reads $4016, return the current bit of the shift register (1 or 0) and shift the internal state. *
+
+[ ] Map Memory $4016 (Write): When the CPU writes 1 then 0 to $4016 (Strobe), "Latch" the current SDL keyboard state into the internal shift register.
+
+[ ] Integrate SDL Events: In main.cpp, inside renderer.handleEvents(), map SDL_KEYDOWN / SDL_KEYUP to your new Input class variables.
+
+2. Implement Mapper Mirroring
+Super Mario Bros. uses Vertical Mirroring (Horizontal Scrolling).
+
+[ ] Parse Header Bit 0: In your ROM loader, read bit 0 of Byte 6. 0 = Horizontal, 1 = Vertical.
+
+[ ] Update Bus::read / Bus::write: Change your hardcoded $07FF mask in the Nametable logic. Use the parsed Mirroring Mode to route $2000/$2800 (Vertical) or $2000/$2400 (Horizontal) to the same physical memory index.
+
+Phase 2: Advanced Graphics (The Visuals)
+Goal: Make Mario appear and the screen scroll.
+
+3. Implement OAM (Object Attribute Memory)
+Sprites (Mario, Goombas) are stored in a separate 256-byte memory area called OAM.
+
+[ ] Implement $2003 (OAMADDR): Store the address pointer.
+
+[ ] Implement $2004 (OAMDATA): Allow CPU to write sprite data byte-by-byte.
+
+[ ] Implement $4014 (OAMDMA): Crucial. This is how games bulk-load sprites. When written, pause the CPU for 513 cycles and copy 256 bytes from CPU RAM (usually $0200-$02FF) to PPU OAM.
+
+4. Render Sprites
+[ ] Sprite Evaluation: In your Renderer, iterate through the 64 sprites in OAM.
+
+[ ] 8x8 vs 8x16: Check PPUCTRL bit 5. SMB uses 8x8, but others use 8x16.
+
+[ ] Priority: Implement Background/Foreground priority (Bit 5 of attribute).
+
+[ ] Flipping: Implement Horizontal/Vertical flipping (Bits 6 and 7).
+
+[ ] Draw: Overlay these pixels on top of your Nametable buffer (respecting transparency!).
+
+5. Implement Scrolling
+Currently, your renderer draws Nametable 0 at (0,0).
+
+[ ] Read Fine X: Use the fine_x register you added to offset the pixel rendering.
+
+[ ] Read Coarse X/Y: Use v_ram_addr (Loopy V) to determine the starting tile.
+
+[ ] Implement Wrap-around: When rendering reaches pixel 256, wrap to the other nametable (controlled by the Mirroring logic).
+
+6. The "Sprite 0 Hit" (The Gatekeeper)
+SMB will hang at the start of World 1-1 if this is missing.
+
+[ ] Collision Logic: In your rendering loop (or PPU step), detect if an opaque pixel of Sprite #0 (the first sprite in OAM) overlaps with an opaque pixel of the background.
+
+[ ] Set Flag: If they collide, set Bit 6 of $2002 (Status) immediately.
+
+[ ] Timing: This must happen at the specific scanline and cycle where the intersection occurs.
+
+Phase 3: Audio (The Voice)
+Goal: Generate sound.
+
+The NES APU (Audio Processing Unit) is driven by the CPU clock.
+
+7. Pulse Channels (Square Waves)
+These play the melody and sound effects (Coin, Jump).
+
+[ ] Oscillators: Create a PulseChannel class.
+
+[ ] Duty Cycle: Implement the 4 duty cycles (12.5%, 25%, 50%, 75%) controlled by $4000 / $4004.
+
+[ ] Timer: Implement the frequency timer (Low/High bytes at $4002/3).
+
+[ ] Envelope: Implement volume decay.
+
+8. Triangle Channel
+The bass line.
+
+[ ] Linear Counter: The unique feature of the triangle channel ($4008).
+
+[ ] Staircase Wave: Generate the 32-step pseudo-sine wave.
+
+9. Noise Channel
+Percussion and explosions.
+
+[ ] LFSR: Implement the Linear Feedback Shift Register (15-bit) for random number generation.
+
+10. SDL2 Audio Integration
+[ ] SDL_OpenAudioDevice: Initialize an audio stream (e.g., 44100Hz, Float32).
+
+[ ] The Mixer: Every frame, sum the output of the channels: Output = Pulse1 + Pulse2 + Triangle + Noise + DMC.
+
+[ ] Sampling: Downsample the NES audio (1.79MHz) to your PC audio (44.1kHz) and push to the SDL queue.
+
+Phase 4: Accuracy (The Heartbeat)
+Goal: Fix the physics and glitches.
+
+11. Cycle-Accurate PPU Rendering
+Your current "Batch" loop (while cycles < frame) is fast but inaccurate for raster effects.
+
+[ ] Interleaved Execution: Instead of running the CPU for 100 cycles then the PPU for 300, try to sync them tighter.
+
+[ ] Scanline Rendering: Change your Renderer to draw one scanline at a time inside PPU::step().
+
+[ ] Sprite 0 Timing: Ensure the Sprite 0 flag is set exactly when the PPU renders that pixel, so the CPU (which is polling $2002 in a tight loop) sees it immediately.
+
+Files to Create
+To stay organized, I recommend creating these specific files next:
+
+cpu/include/input.hpp:
+
+uint8_t read();
+
+void write(uint8_t data);
+
+void setKey(int key, bool pressed);
+
+apu/include/apu.hpp:
+
+void step();
+
+void write(uint16_t addr, uint8_t data);
+
+float getOutputSample();
+
+apu/include/pulse.hpp:
+
+Isolate the square wave logic here.

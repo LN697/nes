@@ -1,64 +1,183 @@
-#include "logger.hpp"
 #include "ppu.hpp"
+#include "logger.hpp"
+#include <iostream> // For error logging if needed
 
 PPU::PPU() {
-    // Initialize registers
-    status = 0x00;
-    cycle = 0;
-    scanline = 0;
+    tblName.fill(0);
+    tblPalette.fill(0);
+
+    log("PPU", "PPU initialized.");
 }
 
 PPU::~PPU() = default;
 
-// Connect to the bus: CPU reads from $2000-$2007
 uint8_t PPU::cpuRead(uint16_t address) {
     uint8_t data = 0x00;
-    switch (address) {
-        case 0x0002: // Status Register ($2002)
-            // Reading status clears the VBlank flag (Bit 7) and the Address Latch
-            data = (status & 0xE0) | (data_buffer & 0x1F); // Noise from buffer
-            status &= ~0x80; // Clear VBlank flag
-            address_latch = 0;
+    
+    // CPU only sees 8 registers, mirrored every 8 bytes from $2000-$3FFF
+    switch (address & 0x0007) {
+        case 0x0002: // STATUS ($2002)
+            // Reading Status clears the VBlank flag and the Address Latch
+            data = (ppustatus & 0xE0) | (ppu_data_buffer & 0x1F); // Noise from buffer
+            ppustatus &= ~0x80; // Clear VBlank
+            address_latch = false; // Reset latch
             break;
 
-        default:
+        case 0x0004: // OAM DATA ($2004)
+            // TODO: Implement OAM
+            break;
+
+        case 0x0007: // DATA ($2007)
+            // Reading Data increments the VRAM address automatically
+            data = ppu_data_buffer;
+            ppu_data_buffer = ppuRead(v_ram_addr);
+            
+            // Palette reads are instant (no buffer delay)
+            if (v_ram_addr >= 0x3F00) data = ppu_data_buffer;
+
+            // Increment Address (Horizontal vs Vertical mode)
+            v_ram_addr += (ppuctrl & 0x04) ? 32 : 1;
             break;
     }
     return data;
 }
 
 void PPU::cpuWrite(uint16_t address, uint8_t data) {
-    switch (address) {
-        case 0x0000: // Control
-            // NMI generation logic would go here
+    switch (address & 0x0007) {
+        case 0x0000: // CONTROL ($2000)
+            ppuctrl = data;
+            // Extract Nametable address (bits 0-1) into temporary address t
+            t_ram_addr = (t_ram_addr & 0xF3FF) | ((data & 0x03) << 10);
             break;
-        default:
+
+        case 0x0001: // MASK ($2001)
+            ppumask = data;
+            break;
+
+        case 0x0005: // SCROLL ($2005)
+            if (!address_latch) {
+                // First Write: Fine X and Coarse X
+                fine_x = data & 0x07;
+                t_ram_addr = (t_ram_addr & 0xFFE0) | ((data >> 3) & 0x1F);
+                address_latch = true;
+            } else {
+                // Second Write: Fine Y and Coarse Y
+                t_ram_addr = (t_ram_addr & 0x8FFF) | ((data & 0x07) << 12); // Fine Y
+                t_ram_addr = (t_ram_addr & 0xFC1F) | ((data & 0xF8) << 2);  // Coarse Y
+                address_latch = false;
+            }
+            break;
+
+        case 0x0006: // ADDRESS ($2006)
+            if (!address_latch) {
+                // First Write: High Byte
+                // Clear high byte of t, merge in new high byte (masked to 14 bits)
+                t_ram_addr = (t_ram_addr & 0x00FF) | ((data & 0x3F) << 8);
+                address_latch = true;
+            } else {
+                // Second Write: Low Byte
+                t_ram_addr = (t_ram_addr & 0xFF00) | data;
+                v_ram_addr = t_ram_addr; // Update current address v from t
+                address_latch = false;
+            }
+            break;
+
+        case 0x0007: // DATA ($2007)
+            ppuWrite(v_ram_addr, data);
+            // Increment Address
+            v_ram_addr += (ppuctrl & 0x04) ? 32 : 1;
             break;
     }
 }
 
-// Step the PPU by 1 cycle (3 PPU cycles = 1 CPU cycle on NTSC)
 void PPU::step(int cycles) {
     cycle += cycles;
     
-    // Basic NTSC Timing: 341 cycles per scanline, 262 scanlines total
+    // NTSC Timing: 341 cycles per scanline
     if (cycle >= 341) {
         cycle -= 341;
         scanline++;
 
-        if (scanline >= 261) {
-            scanline = -1; // Pre-render scanline
+        if (scanline >= 262) {
+            scanline = 0;
+            nmiOccurred = false;
+            ppustatus &= ~0x80; // Clear VBlank flag
+            // Clear Sprite 0 Hit here too
         }
     }
 
-    // Set VBlank Flag at Scanline 241, Cycle 1
+    // Set VBlank flag at (241, 1)
     if (scanline == 241 && cycle == 1) {
-        status |= 0x80; // Set Bit 7 (VBlank)
-        // Trigger NMI here if enabled in Control register
+        ppustatus |= 0x80;
+        if (ppuctrl & 0x80) { // If NMI enabled
+            nmiOccurred = true;
+        }
     }
+}
+
+uint8_t PPU::ppuRead(uint16_t address) {
+    address &= 0x3FFF; // PPU Address Space is 14 bits
     
-    // Clear VBlank Flag at Pre-render line
-    if (scanline == -1 && cycle == 1) {
-        status &= ~0x80;
+    if (address <= 0x1FFF) {
+        // Pattern Tables (CHR-ROM) from Cartridge
+        // Standard NROM mapping: Direct linear access
+        if (address < chrROM.size()) {
+            return chrROM[address];
+        }
+        return 0;
     }
+    else if (address >= 0x2000 && address <= 0x3EFF) {
+        address &= 0x0FFF; // Mask to 4KB array
+        
+        // Simple Vertical Mirroring logic (Common for scrolling games)
+        // Adjust this based on Mapper later!
+        if (address <= 0x03FF)      return tblName[address];         // NT0
+        else if (address >= 0x0400 && address <= 0x07FF) return tblName[address + 4];     // NT1 (Side) - Mirrored?
+        else if (address >= 0x0800 && address <= 0x0BFF) return tblName[address];         // NT2 (Bottom) - Mirrored to 0?
+        else if (address >= 0x0C00 && address <= 0x0FFF) return tblName[address + 4];     // NT3
+        
+        // Use basic fallback for now:
+        return tblName[address & 0x07FF];
+    }
+    else if (address >= 0x3F00 && address <= 0x3FFF) {
+        // Palettes
+        address &= 0x001F;
+        // Hardware Mirroring: 3F10/3F14/3F18/3F1C mirror 3F00/3F04/3F08/3F0C
+        if (address == 0x0010) address = 0x0000;
+        if (address == 0x0014) address = 0x0004;
+        if (address == 0x0018) address = 0x0008;
+        if (address == 0x001C) address = 0x000C;
+        return tblPalette[address];
+    }
+    return 0;
+}
+
+void PPU::ppuWrite(uint16_t address, uint8_t data) {
+    address &= 0x3FFF;
+    
+    if (address >= 0x2000 && address <= 0x3EFF) {
+        // Nametables
+        address &= 0x0FFF;
+        // Simple Mirroring (Vertical)
+        tblName[address & 0x07FF] = data;
+    }
+    else if (address >= 0x3F00 && address <= 0x3FFF) {
+        // Palettes
+        address &= 0x001F;
+        if (address == 0x0010) address = 0x0000;
+        if (address == 0x0014) address = 0x0004;
+        if (address == 0x0018) address = 0x0008;
+        if (address == 0x001C) address = 0x000C;
+        tblPalette[address] = data;
+    }
+}
+
+void PPU::setCHR(const std::vector<uint8_t>& rom) {
+    chrROM = rom;
+    // Resize to at least 8KB (standard size) to prevent OOB
+    if (chrROM.size() < 8192) chrROM.resize(8192);
+}
+
+uint8_t PPU::getControl() {
+    return ppuctrl;
 }

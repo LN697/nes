@@ -19,7 +19,7 @@ Core::Core(Bus* bus_ptr)
     , p(RegType::SR, &p_name, 8)
 {
     core_phase = Phase::STANDBY;
-    // log("CORE", "Core initialized.");
+    log("CORE", "Core initialized.");
 }
 
 Core::~Core() = default;
@@ -37,23 +37,64 @@ void Core::init() {
     log("CORE", "Reset complete. PC: " + std::to_string(pc.getValue()));
 }
 
-void Core::run() {
-    init();
-}
-
 void Core::step() {
     if (core_phase == Phase::ERROR) return;
 
-    // 1. Handle NMI (Non-Maskable Interrupt) from PPU
+    // 1. Handle NMI (Non-Maskable Interrupt)
+    // NMI is edge-triggered. It happens once when the PPU pulls the /NMI line low.
     if (bus->ppu.nmiOccurred) {
-        bus->ppu.nmiOccurred = false; // Acknowledge
-        // Push PC and Status, Jump to NMI Vector ($FFFA)
-        // (Implementation omitted for brevity, similar to IRQ/BRK but vector $FFFA)
+        bus->ppu.nmiOccurred = false; // Acknowledge the edge
+
+        // --- NMI HARDWARE SEQUENCE (7 Cycles) ---
+        
+        // 1. Push PC High Byte
+        uint16_t pc_val = static_cast<uint16_t>(pc.getValue());
+        uint8_t sp = static_cast<uint8_t>(s.getValue());
+        
+        bus->write(0x0100 | sp, (pc_val >> 8) & 0xFF);
+        s.setValue(sp - 1);
+        sp--; // Update local tracker
+
+        // 2. Push PC Low Byte
+        bus->write(0x0100 | sp, pc_val & 0xFF);
+        s.setValue(sp - 1);
+        sp--;
+
+        // 3. Push Status Register (P)
+        // CRITICAL: For Hardware Interrupts (NMI/IRQ), the B-Flag (Bit 4) is CLEARED on the stack.
+        // Bit 5 (Unused) is always SET.
+        uint8_t status = static_cast<uint8_t>(p.getValue());
+        status &= ~0x10; // Clear B (Bit 4)
+        status |= 0x20;  // Set U (Bit 5)
+        
+        bus->write(0x0100 | sp, status);
+        s.setValue(sp - 1);
+
+        // 4. Disable Interrupts (Set I Flag)
+        // The CPU ignores further IRQs inside an interrupt handler.
+        // (NMIs can still interrupt an NMI, technically, but PPU logic prevents this loop)
+        setStatusFlag(StatusFlag::I, true);
+
+        // 5. Fetch NMI Vector ($FFFA / $FFFB)
+        // This is where the Game Developer put their graphics update code.
+        uint16_t lo = bus->read(0xFFFA);
+        uint16_t hi = bus->read(0xFFFB);
+        pc.setValue((hi << 8) | lo);
+
+        // 6. Tick Accounting
+        // NMI takes 7 cycles.
+        last_cycles = 7; 
+
+        // log("CORE", "NMI Triggered. PC set to: " + std::to_string(pc.getValue()));
+        
+        // We return early because the NMI *consumes* this step. 
+        // We do not execute the next opcode in this same step call.
+        return; 
     }
 
     // 2. Fetch and Execute
     uint8_t opcode = fetch();
-    // log("CORE", "Opcode: " + std::to_string(opcode));
+    //log("CORE", "Opcode: " + std::to_string(opcode));
 
     if (instr_table[opcode]) {
         instr_table[opcode](*this);

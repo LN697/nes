@@ -1,19 +1,31 @@
 #include "bus.hpp"
+#include "logger.hpp"
 
 Bus::Bus() {
     cpuRam.fill(0);
-    // Initialize test ram for testbench usage
-    testRam.resize(65536, 0); 
+    
+    testRam.resize(65536);
+    cartridgeROM.reserve(32768);
+
+    log("BUS", "Bus initialized.");
 }
 
 Bus::~Bus() = default;
 
 uint8_t Bus::readCartridge(uint16_t address) {
     if (cartridgeROM.empty()) return 0;
+
+    if (address < 0x8000) return 0; 
+
     uint32_t rom_address = address - 0x8000;
-    if (rom_address < cartridgeROM.size()) {
-        return cartridgeROM[rom_address];
+    try {
+        if (rom_address < cartridgeROM.size()) {
+            return cartridgeROM.at(rom_address); 
+        }
+    } catch (...) {
+        return 0;
     }
+    
     return 0;
 }
 
@@ -22,7 +34,6 @@ void Bus::setTestMode(bool enabled) {
 }
 
 uint8_t Bus::read(uint16_t address) {
-    // Testbench Bypass
     if (testMode) return testRam[address];
 
     // 1. Internal RAM ($0000 - $1FFF)
@@ -46,7 +57,6 @@ uint8_t Bus::read(uint16_t address) {
 }
 
 void Bus::write(uint16_t address, uint8_t data) {
-    // Testbench Bypass
     if (testMode) {
         testRam[address] = data;
         return;
@@ -63,14 +73,12 @@ void Bus::write(uint16_t address, uint8_t data) {
     }
 }
 
-// Fixed: Matches the signature causing your error
 void Bus::loadROM(const std::vector<uint8_t>& prg, bool mirror_upper) {
     cartridgeROM = prg;
     if (mirror_upper && cartridgeROM.size() <= 16384) {
-        // If NROM-128, duplicates lower 16KB to upper 16KB logic handled in readCartridge
-        // or we can physically resize:
-        // For simple NROM implementation, having physical data is often easier:
         cartridgeROM.resize(32768);
-        std::copy(cartridgeROM.begin(), cartridgeROM.begin() + 16384, cartridgeROM.begin() + 16384);
+        for (size_t i = 0; i < 16384; ++i) {
+            cartridgeROM[16384 + i] = cartridgeROM[i];
+        }
     }
 }

@@ -45,7 +45,6 @@ class Core {
         virtual ~Core();
 
         void init();
-        void run();
         void step();
         
         std::uint8_t read(std::uint16_t address) const;
@@ -58,4 +57,5 @@ class Core {
         bool getStatusFlag(StatusFlag flag) const;
         
         int core_id = 0;
+        int last_cycles = 0;
 };

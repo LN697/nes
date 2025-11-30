@@ -3,6 +3,7 @@
 CXX := g++
 STD := -std=c++17
 CXXFLAGS := -Wall -Wextra $(STD)
+LDLIBS := -lSDL2
 
 # find all include directories (any folder named "include")
 INC_DIRS := $(shell find . -type d -name include 2>/dev/null | sed 's|^./||')
@@ -22,7 +23,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	@echo Linking $@
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDLIBS)
 
 # generic rule: compile source -> object under build/
 # ensures directory exists before compiling
