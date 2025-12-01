@@ -1,5 +1,7 @@
-build/
-nes
+build
 .gitignore
 debug.log
 tests
+roms
+.vscode
+nes

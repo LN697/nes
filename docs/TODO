@@ -107,25 +107,4 @@ Your current "Batch" loop (while cycles < frame) is fast but inaccurate for rast
 
 [ ] Sprite 0 Timing: Ensure the Sprite 0 flag is set exactly when the PPU renders that pixel, so the CPU (which is polling $2002 in a tight loop) sees it immediately.
 
-Files to Create
-To stay organized, I recommend creating these specific files next:
-
-cpu/include/input.hpp:
-
-uint8_t read();
-
-void write(uint8_t data);
-
-void setKey(int key, bool pressed);
-
-apu/include/apu.hpp:
-
-void step();
-
-void write(uint16_t addr, uint8_t data);
-
-float getOutputSample();
-
-apu/include/pulse.hpp:
-
-Isolate the square wave logic here.
+12. Save/Load state features

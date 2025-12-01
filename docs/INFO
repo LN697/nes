@@ -1,22 +1,8 @@
-commmon
-    - contains basic defines and typedefs used across the project 
+Device Info -
+    1. NES Emulator
+    2. Vsync enabled by default
+    3. Delay in input by a frame
 
-core_base
-    - contains a modular base class for CPU core functionalities
-
-core_policies
-    - contains core specific policies implementations using templates to emulate CPU instructions
-
-core
-    - contains the main CPU core implementation
-
-memory
-    - contains memory management and emulation components
-    - 2KB SRAM (WRAM) + 62KB memory mapped components (PPU, APU, ...) = 64KB address space (16-bit addr field)
-    - only 49120 bytes of the cartridge data can be accessed, for e.g., "Super Mario Bros" 32KB Program ROM, 8KB Character ROM = 40KB, + 3KB WRAM
-
-register
-    - contains CPU register definitions and utilities
-
-ppu
-    - 
+ROMs supported - Add more by implementing memory mapping functionality
+    1. Super Mario Bros
+    2. NES Test
