@@ -2,7 +2,7 @@
 
 CXX := g++
 STD := -std=c++17
-CXXFLAGS := -Wall -Wextra $(STD)
+CXXFLAGS := -Wall -Wextra -O3 $(STD)
 LDLIBS := -lSDL2
 
 # find all include directories (any folder named "include")
