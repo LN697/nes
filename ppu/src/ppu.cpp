@@ -20,7 +20,7 @@ PPU::PPU() {
     tblPalette.fill(0);
     pixels.resize(256 * 240);
     pixels.assign(256 * 240, 0xFF000000);
-    log("PPU", "PPU initialized (Shift Register Mode).");
+    log("PPU", "PPU initialized (Corrected Shift Timing).");
 }
 
 PPU::~PPU() = default;
@@ -140,6 +140,7 @@ void PPU::transferAddressY() {
 void PPU::loadBackgroundShifters() {
     bg_shifter_pattern_lo = (bg_shifter_pattern_lo & 0xFF00) | bg_next_tile_lsb;
     bg_shifter_pattern_hi = (bg_shifter_pattern_hi & 0xFF00) | bg_next_tile_msb;
+    
     bg_shifter_attrib_lo  = (bg_shifter_attrib_lo & 0xFF00) | ((bg_next_tile_attrib & 0b01) ? 0xFF : 0x00);
     bg_shifter_attrib_hi  = (bg_shifter_attrib_hi & 0xFF00) | ((bg_next_tile_attrib & 0b10) ? 0xFF : 0x00);
 }
@@ -168,25 +169,28 @@ bool PPU::step(int cycles) {
             // Skip "Dot 0"
             if (scanline == 0 && cycle == 0) cycle = 1;
 
-            // Render/Fetch Phase (Cycles 1-256) + Prefetch (321-336)
-            if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
-                
+            // --- 1. RENDER PIXEL (Immediate) ---
+            if (scanline >= 0 && scanline <= 239 && cycle >= 1 && cycle <= 256) {
+                renderPixel();
+            }
+
+            // --- 2. UPDATE SHIFTERS (After Render) ---
+            // Only update if in the fetch phase
+            if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 337)) {
                 updateShifters();
                 
+                // --- 3. FETCH DATA ---
                 switch ((cycle - 1) % 8) {
                     case 0:
                         loadBackgroundShifters();
-                        // Fetch NameTable (Tile ID)
                         bg_next_tile_id = ppuRead(0x2000 | (v_ram_addr & 0x0FFF));
                         break;
                     case 2:
-                        // Fetch Attribute Table
                         {
                             uint16_t tile_x = v_ram_addr & 0x001F;
                             uint16_t tile_y = (v_ram_addr & 0x03E0) >> 5;
                             uint16_t nt_idx = (v_ram_addr & 0x0C00) >> 10;
                             uint16_t attr_addr = 0x23C0 | (nt_idx << 10) | ((tile_y / 4) << 3) | (tile_x / 4);
-                            
                             uint8_t attr_byte = ppuRead(attr_addr);
                             bool bottom = tile_y & 2;
                             bool right  = tile_x & 2;
@@ -195,7 +199,6 @@ bool PPU::step(int cycles) {
                         }
                         break;
                     case 4:
-                        // Fetch Pattern Table Low
                         {
                             uint16_t pattern_base = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
                             uint16_t tile_addr = pattern_base + (static_cast<uint16_t>(bg_next_tile_id) * 16) + ((v_ram_addr >> 12) & 0x07);
@@ -203,7 +206,6 @@ bool PPU::step(int cycles) {
                         }
                         break;
                     case 6:
-                        // Fetch Pattern Table High
                         {
                             uint16_t pattern_base = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
                             uint16_t tile_addr = pattern_base + (static_cast<uint16_t>(bg_next_tile_id) * 16) + ((v_ram_addr >> 12) & 0x07);
@@ -227,11 +229,6 @@ bool PPU::step(int cycles) {
 
             if (scanline == -1 && cycle >= 280 && cycle <= 304) {
                 transferAddressY();
-            }
-
-            // Perform Pixel Rendering
-            if (scanline >= 0 && scanline <= 239 && cycle >= 1 && cycle <= 256) {
-                renderPixel();
             }
         }
 
@@ -269,6 +266,7 @@ void PPU::renderPixel() {
     bool bg_opaque = false;
 
     if (ppumask & 0x08) {
+        // Mux selects the bit. fine_x = 0 -> Bit 15.
         uint16_t bit_mux = 0x8000 >> fine_x;
 
         uint8_t p0 = (bg_shifter_pattern_lo & bit_mux) > 0;
@@ -373,9 +371,6 @@ uint8_t PPU::ppuRead(uint16_t address) {
     }
     if (address >= 0x3F00) { 
         address &= 0x001F;
-        // CORRECTED PALETTE MIRRORING:
-        // $3F10 mirrors $3F00, $3F14 mirrors $3F04, etc.
-        // We do not flatten $3F04 to $3F00.
         if (address == 0x0010) address = 0x0000;
         if (address == 0x0014) address = 0x0004;
         if (address == 0x0018) address = 0x0008;
@@ -400,7 +395,6 @@ void PPU::ppuWrite(uint16_t address, uint8_t data) {
     }
     else if (address >= 0x3F00) {
         address &= 0x001F;
-        // Same mirroring fix for Writes
         if (address == 0x0010) address = 0x0000;
         if (address == 0x0014) address = 0x0004;
         if (address == 0x0018) address = 0x0008;
