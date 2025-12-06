@@ -55,3 +55,31 @@ clean-testbench:
 	@echo Removing compiled testbench
 	@rm -f tests/testbench
 
+
+# PPU tests
+.PHONY: test_ppu
+test_ppu:
+	@echo Compiling ppu test
+	$(CXX) $(CXXFLAGS) -DUNIT_TEST $(CPPFLAGS) ppu/src/ppu.cpp utility/src/logger.cpp tests/ppu_tests.cpp -o tests/ppu_tests
+
+# Bus tests
+.PHONY: test_bus
+test_bus:
+	@echo Compiling bus test
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) bus/src/bus.cpp ppu/src/ppu.cpp controller/src/input.cpp utility/src/logger.cpp tests/bus_tests.cpp -o tests/bus_tests $(LDLIBS)
+
+.PHONY: run_tests
+run_tests: test_ppu test_bus
+	@echo Running PPU tests
+	./tests/ppu_tests || exit 1
+	@echo Running Bus tests
+	./tests/bus_tests || exit 1
+
+
+# Renderer tests (depends on SDL2)
+.PHONY: test_renderer
+test_renderer:
+	@echo Compiling renderer test
+	@mkdir -p tests/ppm
+	$(CXX) $(CXXFLAGS) -DUNIT_TEST $(CPPFLAGS) ppu/src/ppu.cpp ppu/src/renderer.cpp controller/src/input.cpp utility/src/logger.cpp tests/renderer_tests.cpp -o tests/renderer_tests $(LDLIBS)
+

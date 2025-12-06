@@ -26,7 +26,6 @@ int main(int argc, char** argv) {
     Renderer renderer;
     if (!renderer.init("NES Emulator", 256, 240, 3)) return 1;
 
-    // Load ROM (Simplified)
     std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
     if (!file.is_open()) return 1;
     std::streamsize size = file.tellg();

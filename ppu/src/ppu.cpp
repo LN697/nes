@@ -20,6 +20,16 @@ PPU::PPU() {
     tblPalette.fill(0);
     pixels.resize(256 * 240);
     pixels.assign(256 * 240, 0xFF000000);
+    #ifdef UNIT_TEST
+    debug_bg_pixel.assign(256 * 240, 0);
+    debug_bg_palette.assign(256 * 240, 0);
+    debug_sp_pixel.assign(256 * 240, 0);
+    debug_sp_palette.assign(256 * 240, 0);
+        debug_write_cycle.assign(256 * 240, 0);
+        debug_write_scanline.assign(256 * 240, 0);
+        debug_write_vram.assign(256 * 240, 0);
+    master_cycle = 0;
+    #endif
     log("PPU", "PPU initialized (Corrected Shift Timing).");
 }
 
@@ -129,6 +139,16 @@ void PPU::incrementScrollY() {
     }
 }
 
+#ifdef UNIT_TEST
+void PPU::test_incrementScrollX() { incrementScrollX(); }
+void PPU::test_incrementScrollY() { incrementScrollY(); }
+void PPU::test_transferAddressX() { transferAddressX(); }
+void PPU::test_transferAddressY() { transferAddressY(); }
+#endif
+
+// Keep getter defined inline in header under UNIT_TEST
+
+
 void PPU::transferAddressX() {
     v_ram_addr = (v_ram_addr & 0xFBE0) | (t_ram_addr & 0x041F);
 }
@@ -146,7 +166,8 @@ void PPU::loadBackgroundShifters() {
 }
 
 void PPU::updateShifters() {
-    if (ppumask & 0x18) {
+    // Only shift background shifters when background rendering is enabled
+    if (ppumask & 0x08) {
         bg_shifter_pattern_lo <<= 1;
         bg_shifter_pattern_hi <<= 1;
         bg_shifter_attrib_lo <<= 1;
@@ -162,6 +183,9 @@ bool PPU::step(int cycles) {
     bool frame_done = false;
 
     for (int i = 0; i < cycles; ++i) {
+    #ifdef UNIT_TEST
+    master_cycle++;
+    #endif
         
         // --- VISIBLE SCANLINES (-1 to 239) ---
         if (scanline >= -1 && scanline <= 239) {
@@ -346,7 +370,22 @@ void PPU::renderPixel() {
     }
 
     int idx = scanline * 256 + (cycle - 1);
-    if (idx < 256 * 240) pixels[idx] = final_color;
+#ifdef UNIT_TEST
+    if (idx >= 0 && idx < 256 * 240) {
+        pixels[idx] = final_color;
+        debug_bg_pixel[idx] = bg_pixel;
+        debug_bg_palette[idx] = bg_palette;
+        debug_sp_pixel[idx] = sp_pixel;
+        debug_sp_palette[idx] = sp_palette;
+        debug_write_cycle[idx] = master_cycle;
+        debug_write_scanline[idx] = scanline;
+        debug_write_vram[idx] = v_ram_addr;
+    }
+#else
+    if (idx >= 0 && idx < 256 * 240) {
+        pixels[idx] = final_color;
+    }
+#endif
 }
 
 uint32_t PPU::getColorFromPaletteRam(uint8_t palette, uint8_t pixel) {
@@ -365,7 +404,7 @@ uint8_t PPU::ppuRead(uint16_t address) {
             return tblName[address & 0x07FF];
         } 
         else if (mirroring == Mirroring::HORIZONTAL) {
-            if (address & 0x0800) return tblName[0x0400 + (address & 0x03FF)];
+            if (address & 0x0800) return tblName[0x0400 + (address & 0x07FF)];
             else                  return tblName[address & 0x03FF];
         }
     }
@@ -389,7 +428,7 @@ void PPU::ppuWrite(uint16_t address, uint8_t data) {
             tblName[address & 0x07FF] = data;
         } 
         else if (mirroring == Mirroring::HORIZONTAL) {
-            if (address & 0x0800) tblName[0x0400 + (address & 0x03FF)] = data;
+            if (address & 0x0800) tblName[0x0400 + (address & 0x07FF)] = data;
             else                  tblName[address & 0x03FF] = data;
         }
     }

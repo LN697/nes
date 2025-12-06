@@ -38,6 +38,34 @@ public:
     const std::array<uint8_t, 256>& getOAM() const;
     void startOAMDMA(const std::array<uint8_t, 256>& data);
 
+#ifdef UNIT_TEST
+    // Test-only helpers
+    void test_incrementScrollX();
+    void test_incrementScrollY();
+    void test_transferAddressX();
+    void test_transferAddressY();
+    uint16_t getVramAddr() const { return v_ram_addr; }
+    void setVramAddr(uint16_t v) { v_ram_addr = v; }
+    uint16_t getTRamAddr() const { return t_ram_addr; }
+    int getScanline() const { return scanline; }
+    int getCycle() const { return cycle; }
+    uint8_t getBgNextAttrib() const { return bg_next_tile_attrib; }
+    uint8_t getFineX() const { return fine_x; }
+    uint16_t getBgShifterPatternLo() const { return bg_shifter_pattern_lo; }
+    uint16_t getBgShifterPatternHi() const { return bg_shifter_pattern_hi; }
+    uint16_t getBgShifterAttribLo() const { return bg_shifter_attrib_lo; }
+    uint16_t getBgShifterAttribHi() const { return bg_shifter_attrib_hi; }
+    uint8_t getBgNextTileLsb() const { return bg_next_tile_lsb; }
+    uint8_t getBgNextTileMsb() const { return bg_next_tile_msb; }
+    const std::vector<uint8_t>& getDebugBgPixels() const { return debug_bg_pixel; }
+    const std::vector<uint8_t>& getDebugBgPalettes() const { return debug_bg_palette; }
+    const std::vector<uint8_t>& getDebugSpPixels() const { return debug_sp_pixel; }
+    const std::vector<uint8_t>& getDebugSpPalettes() const { return debug_sp_palette; }
+    const std::vector<uint32_t>& getDebugWriteCycles() const { return debug_write_cycle; }
+    const std::vector<uint16_t>& getDebugWriteScanlines() const { return debug_write_scanline; }
+    const std::vector<uint16_t>& getDebugWriteVram() const { return debug_write_vram; }
+#endif
+
 private:
     // --- Memory ---
     std::array<uint8_t, 2048> tblName;
@@ -48,6 +76,12 @@ private:
     // --- Screen Buffer ---
     std::vector<uint32_t> pixels;
     static const std::array<uint32_t, 64> systemPalette;
+    #ifdef UNIT_TEST
+    std::vector<uint8_t> debug_bg_pixel;   // background pixel value (0..3)
+    std::vector<uint8_t> debug_bg_palette; // background palette idx (0..3)
+    std::vector<uint8_t> debug_sp_pixel;
+    std::vector<uint8_t> debug_sp_palette;
+    #endif
 
     // --- Configuration ---
     Mirroring mirroring = Mirroring::HORIZONTAL;
@@ -82,6 +116,12 @@ private:
     int16_t cycle = 0;
     int16_t scanline = 0; 
     bool frame_complete = false;
+    #ifdef UNIT_TEST
+    uint64_t master_cycle = 0; // absolute cycle counter for debug
+    std::vector<uint32_t> debug_write_cycle; // absolute cycle when pixel last written
+    std::vector<uint16_t> debug_write_scanline; // scanline when pixel last written
+    std::vector<uint16_t> debug_write_vram; // the vram address used when pixel was last written
+    #endif
 
     // --- Internal Helpers ---
     uint8_t ppuRead(uint16_t address);
