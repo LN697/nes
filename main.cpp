@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     try {
         // Frame Timing (NTSC)
         using namespace std::chrono;
-        const nanoseconds frame_duration(16666667); // 1,000,000,000ns / 60fps
+        const nanoseconds frame_duration(16666667);
         auto frame_start_time = high_resolution_clock::now();
 
         const int CYCLES_PER_FRAME = 29780;

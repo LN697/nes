@@ -1,0 +1,8 @@
+High Priority -
+1. OAM DMA transfer at $4014
+2. PPU rendering model and training
+
+Medium Priority -
+1. PPU and Renderer coupling
+2. Controller 2 support
+3. Sprite zero hit calculation

@@ -1,6 +1,6 @@
 #include "ppu.hpp"
 #include "logger.hpp"
-#include <iostream> // For error logging if needed
+#include <iostream>
 
 PPU::PPU() {
     tblName.fill(0);
@@ -108,10 +108,16 @@ void PPU::writeOAMData(uint8_t data) {
     oamaddr++; // Increment OAMADDR after write
 }
 
+void PPU::startOAMDMA(const std::array<uint8_t, 256>& data) {
+    for (int i = 0; i < 256; ++i) {
+        oamData[(oamaddr + i) & 0xFF] = data[i];
+    }
+}
+
 void PPU::step(int cycles) {
     cycle += cycles;
     
-    // NTSC Timing: 341 cycles per scanline
+    // NTSC Timing
     if (cycle >= 341) {
         cycle -= 341;
         scanline++;
@@ -119,15 +125,25 @@ void PPU::step(int cycles) {
         if (scanline >= 262) {
             scanline = 0;
             nmiOccurred = false;
-            ppustatus &= ~0x80; // Clear VBlank flag
-            // Clear Sprite 0 Hit here too
+            ppustatus &= ~0x80; // Clear VBlank
+            ppustatus &= ~0x40; // Clear Sprite 0 Hit at start of frame
         }
     }
 
-    // Set VBlank flag at (241, 1)
+    // [NEW] Sprite 0 Hit Detection
+    // Checks if we are currently drawing the pixel where the hit occurs.
+    // Optimization: Only check if rendering is enabled (Mask bits 3 or 4 set)
+    // and we haven't already hit it this frame.
+    if ((ppumask & 0x18) && !(ppustatus & 0x40)) {
+        if (spriteZeroHit(cycle, scanline)) {
+            ppustatus |= 0x40; // Set Sprite 0 Hit flag
+        }
+    }
+
+    // Set VBlank flag
     if (scanline == 241 && cycle == 1) {
         ppustatus |= 0x80;
-        if (ppuctrl & 0x80) { // If NMI enabled
+        if (ppuctrl & 0x80) {
             nmiOccurred = true;
         }
     }
@@ -223,6 +239,101 @@ const std::array<uint8_t, 256>& PPU::getOAM() const {
 
 uint16_t PPU::getVRAMAddr() const {
     return v_ram_addr;
+}
+
+bool PPU::spriteZeroHit(int currentCycle, int currentScanline) {
+    // 1. Get Sprite 0 coordinates
+    uint8_t y = oamData[0];
+    uint8_t tileID = oamData[1];
+    uint8_t attr = oamData[2];
+    uint8_t x = oamData[3];
+
+    // 2. Bounding Box Check
+    // Sprite 0 is drawn on scanlines Y+1 to Y+8 (or Y+16)
+    // We are currently at 'currentScanline' and 'currentCycle' (which approximates X)
+    
+    // Check Y range
+    if (currentScanline < y + 1 || currentScanline > y + 8) return false;
+    
+    // Check X range (cycle roughly corresponds to X pixel)
+    // Note: Cycles 1-256 are pixels 0-255.
+    if (currentCycle < x || currentCycle > x + 8) return false;
+
+    // 3. Pixel Perfect Check
+    // If we are inside the box, we must check if both pixels are opaque.
+    
+    // A. Fetch Sprite Pixel
+    uint16_t spritePatternBase = (ppuctrl & 0x08) ? 0x1000 : 0x0000;
+    int row = currentScanline - (y + 1);
+    // Handle Flip V (Bit 7)
+    if (attr & 0x80) row = 7 - row;
+    
+    uint16_t spriteAddr = spritePatternBase + (tileID * 16) + row;
+    uint8_t s_lsb = ppuRead(spriteAddr);
+    uint8_t s_msb = ppuRead(spriteAddr + 8);
+    
+    // Handle Flip H (Bit 6)
+    int col = currentCycle - x;
+    if (attr & 0x40) col = 7 - col;
+    
+    uint8_t spritePixel = ((s_lsb >> (7 - col)) & 1) | (((s_msb >> (7 - col)) & 1) << 1);
+    
+    // If sprite pixel is transparent, no hit.
+    if (spritePixel == 0) return false;
+
+    // B. Fetch Background Pixel
+    // Reconstruct the background pixel at the current (X, Y) using Scroll Registers.
+    
+    // If BG rendering is disabled in Mask (Bit 3), the BG is transparent.
+    if (!(ppumask & 0x08)) return false;
+
+    // 1. Calculate "World Space" Coordinates
+    // We use v_ram_addr (Loopy V) to determine the top-left scroll position.
+    // Coarse X: bits 0-4, Coarse Y: bits 5-9, NT: bits 10-11, Fine Y: bits 12-14
+    
+    uint16_t scrollX = (v_ram_addr & 0x001F) * 8 + fine_x + currentCycle;
+    uint16_t scrollY = ((v_ram_addr >> 5) & 0x001F) * 8 + ((v_ram_addr >> 12) & 0x07) + currentScanline;
+
+    // 2. Handle Nametable Wrapping
+    // Determine which nametable we are currently in based on the scroll + screen position
+    uint8_t nt = (v_ram_addr >> 10) & 0x03;
+    
+    if (scrollX >= 256) {
+        scrollX %= 256;
+        nt ^= 0x01; // Cross horizontal boundary
+    }
+    if (scrollY >= 240) {
+        scrollY %= 240;
+        nt ^= 0x02; // Cross vertical boundary
+    }
+
+    // 3. Fetch Tile ID
+    // Address: $2000 | (NT << 10) | (TileY << 5) | TileX
+    uint16_t tileX = scrollX / 8;
+    uint16_t tileY = scrollY / 8;
+    uint16_t tileAddr = 0x2000 | (nt << 10) | (tileY << 5) | tileX;
+    uint8_t bgTileID = ppuRead(tileAddr);
+
+    // 4. Fetch Pattern Data
+    // BG Pattern Table is PPUCTRL Bit 4 (0x0000 or 0x1000)
+    uint16_t bgPatternBase = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
+    uint8_t fineY = scrollY % 8;
+    
+    uint16_t patternAddr = bgPatternBase + (bgTileID * 16) + fineY;
+    uint8_t bg_lsb = ppuRead(patternAddr);
+    uint8_t bg_msb = ppuRead(patternAddr + 8);
+
+    // 5. Extract Pixel
+    // Bit selection depends on Fine X alignment
+    uint8_t fineX_bit = 7 - (scrollX % 8);
+    uint8_t bgPixel = ((bg_lsb >> fineX_bit) & 0x01) | 
+                      (((bg_msb >> fineX_bit) & 0x01) << 1);
+
+    // 6. Check Collision
+    // A hit requires BOTH the Sprite Pixel AND Background Pixel to be opaque (non-zero).
+    if (bgPixel == 0) return false;
+
+    return true; 
 }
 
 uint8_t PPU::getFineX() const {

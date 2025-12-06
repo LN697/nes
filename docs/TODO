@@ -1,24 +1,3 @@
-Phase 2: Advanced Graphics (The Visuals)
-Goal: Make Mario appear and the screen scroll.
-
-5. Implement Scrolling
-Currently, your renderer draws Nametable 0 at (0,0).
-
-[ ] Read Fine X: Use the fine_x register you added to offset the pixel rendering.
-
-[ ] Read Coarse X/Y: Use v_ram_addr (Loopy V) to determine the starting tile.
-
-[ ] Implement Wrap-around: When rendering reaches pixel 256, wrap to the other nametable (controlled by the Mirroring logic).
-
-6. The "Sprite 0 Hit" (The Gatekeeper)
-SMB will hang at the start of World 1-1 if this is missing.
-
-[ ] Collision Logic: In your rendering loop (or PPU step), detect if an opaque pixel of Sprite #0 (the first sprite in OAM) overlaps with an opaque pixel of the background.
-
-[ ] Set Flag: If they collide, set Bit 6 of $2002 (Status) immediately.
-
-[ ] Timing: This must happen at the specific scanline and cycle where the intersection occurs.
-
 Phase 3: Audio (The Voice)
 Goal: Generate sound.
 

@@ -33,6 +33,7 @@ public:
     uint8_t ppuRead(uint16_t address);
     void ppuWrite(uint16_t address, uint8_t data);
     void writeOAMData(uint8_t data);
+    void startOAMDMA(const std::array<uint8_t, 256>& data);
 
     void setCHR(const std::vector<uint8_t>& rom);
     uint8_t getControl() const;
@@ -68,4 +69,6 @@ private:
     // --- Timing State ---
     int16_t cycle = 0;
     int16_t scanline = 0; // 0-261
+
+    bool spriteZeroHit(int cycles, int scanline);
 };

@@ -73,13 +73,13 @@ void Bus::write(uint16_t address, uint8_t data) {
     } else if (address == 0x4014) {
         // Writing XX copies 256 bytes from $XX00-$XXFF to OAM
         uint16_t page = static_cast<uint16_t>(data) << 8;
-        
-        // Perform the copy instantly
+        std::array<uint8_t, 256> pageData;       // Perform the copy instantly
         for (int i = 0; i < 256; ++i) {
             // Read from CPU Bus (Usually RAM $0000-$07FF, but can be ROM)
-            uint8_t val = read(page + i);
-            ppu.writeOAMData(val);
+            pageData[i] = read(page + i);
         }
+
+        ppu.startOAMDMA(pageData);
         
         // Account for CPU pause
         // DMA takes 513 or 514 cycles. We use 513 as a safe average.

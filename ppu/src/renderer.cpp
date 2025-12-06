@@ -156,87 +156,101 @@ void Renderer::renderPatternTable(int tableIndex, uint8_t /* paletteID */, Bus& 
 }
 
 void Renderer::renderNameTable(Bus& bus) {
-    // We ignore the passed ntID and calculate the real one from PPU Scroll registers.
-    
-    // 1. Get Scroll Info
+    // 1. Get Scroll Registers from PPU
+    // 'v' (Loopy V) contains: 
+    //   Bits 0-4: Coarse X (0-31)
+    //   Bits 5-9: Coarse Y (0-29)
+    //   Bits 10-11: Base Nametable Select (0-3)
+    //   Bits 12-14: Fine Y (0-7)
     uint16_t v = bus.ppu.getVRAMAddr();
     uint8_t fine_x = bus.ppu.getFineX();
     uint8_t ppuctrl = bus.ppu.getControl();
     
-    // Extract Base Nametable (0-3) from the "v" register (Bits 10-11)
-    // This tells us which Nametable is currently top-left.
-    uint8_t nametableX = (v >> 10) & 1;
-    uint8_t nametableY = (v >> 11) & 1;
-    
-    // Extract Coarse X/Y (The tile offset within that nametable)
-    // Coarse X (0-31) is bits 0-4
-    // Coarse Y (0-29) is bits 5-9
+    // Extract components
     uint8_t coarseX = v & 0x001F;
     uint8_t coarseY = (v >> 5) & 0x001F;
+    uint8_t nametableX = (v >> 10) & 1;
+    uint8_t nametableY = (v >> 11) & 1;
+    uint8_t fineY = (v >> 12) & 0x07;
 
     // 2. Determine Pattern Table for Background
+    // PPUCTRL Bit 4 (0=$0000, 1=$1000)
     uint16_t bgPatternBase = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
 
-    // 3. Render the Viewport (256x240)
-    // We iterate SCREEN PIXELS, not tiles, to handle the fine scroll seamlessly.
-    // (Optimization: In a real engine we'd iterate tiles and clip, but this is clearer).
-    
+    // 3. Render Screen Pixels (256x240)
     for (int screenY = 0; screenY < 240; screenY++) {
-        // Calculate effective Y in Nametable space
-        // TODO: Implement Fine Y scroll (bits 12-14 of v). For SMB (Horizontal), Coarse Y is mostly enough.
-        // For strict accuracy we need Fine Y, but let's stick to the tile grid for simplicity first.
-        int tileY = (coarseY + (screenY / 8)) % 30; 
         
-        // Determine which Vertical Nametable we are in (Y-mirroring wrap)
-        // SMB is Horizontal Scrolling, so we mostly care about X wrap.
-        // If we wrap Y (>= 30 rows), we might toggle NT bit Y. (Omitted for simplicity).
-        int currentNtY = nametableY;
+        // --- Y-Axis Scrolling Math ---
+        // Calculate the absolute Y pixel in "World Space"
+        int absoluteY = screenY + (coarseY * 8) + fineY;
+        
+        // Convert to Tile Grid Y (0-29)
+        int tileY = absoluteY / 8;
+        
+        // Handle Y Wrapping (Vertical Mirroring Logic)
+        // If we go past 30 rows (240 pixels), we wrap to the next vertical nametable
+        int currentNtY = nametableY + (tileY / 30);
+        tileY %= 30;      // Wrap rows 0-29
+        currentNtY %= 2;  // Wrap nametable 0-1 (Vertically)
+        
+        // Fine Y offset inside the tile (0-7)
+        int rowInTile = absoluteY % 8;
 
         for (int screenX = 0; screenX < 256; screenX++) {
             
-            // Calculate effective X in Nametable space (including Fine X offset)
-            int pixelX = screenX + (coarseX * 8) + fine_x;
-            int tileX = (pixelX / 8);
+            // --- X-Axis Scrolling Math ---
+            // Calculate absolute X pixel
+            int absoluteX = screenX + (coarseX * 8) + fine_x;
             
-            // Handle X Wrap-around (Crossing into the next Nametable)
-            // If we go past 32 columns (pixel 256), we toggle the Horizontal Nametable bit
+            // Convert to Tile Grid X (0-31)
+            int tileX = absoluteX / 8;
+            
+            // Handle X Wrapping (Horizontal Scrolling)
+            // If we go past 32 columns (256 pixels), we wrap to the neighbor nametable
             int currentNtX = nametableX + (tileX / 32);
-            tileX %= 32;
-            currentNtX %= 2; // Wrap 0-1
+            tileX %= 32;      // Wrap columns 0-31
+            currentNtX %= 2;  // Wrap nametable 0-1 (Horizontally)
             
-            // Nametable ID (0-3)
-            int ntID = (currentNtY * 2) + currentNtX;
-            uint16_t baseAddr = 0x2000 + (ntID * 0x400);
-            
-            // --- Fetch Tile & Attribute (Cached for speed in real emu, explicit here) ---
+            // Resolve Final Nametable ID (0-3)
+            // Layout: 0=(0,0), 1=(1,0), 2=(0,1), 3=(1,1)
+            int effectiveNtID = (currentNtY * 2) + currentNtX;
+            uint16_t baseAddr = 0x2000 + (effectiveNtID * 0x400);
+
+            // --- A. Fetch Tile ---
             uint16_t tileAddr = baseAddr + (tileY * 32) + tileX;
             uint8_t tileID = bus.ppu.ppuRead(tileAddr);
-            
+
+            // --- B. Fetch Attribute (Color) ---
             uint16_t attrAddr = baseAddr + 0x03C0 + (tileY / 4) * 8 + (tileX / 4);
             uint8_t attrByte = bus.ppu.ppuRead(attrAddr);
+            
             uint8_t shift = ((tileY & 2) << 1) | (tileX & 2);
             uint8_t paletteID = (attrByte >> shift) & 0x03;
 
-            // --- Fetch Pixel ---
-            // Which row of the tile?
-            int rowInTile = screenY % 8; // Simplified Fine Y
-            int colInTile = pixelX % 8;
-            
+            // --- C. Fetch Pixel ---
+            // We only fetch the specific row we are drawing
             uint16_t patternAddr = bgPatternBase + (tileID * 16) + rowInTile;
             uint8_t tile_lsb = bus.ppu.ppuRead(patternAddr);
             uint8_t tile_msb = bus.ppu.ppuRead(patternAddr + 8);
-            
+
+            // Extract the specific column bit
+            // Note: 7 - (absoluteX % 8) handles the bit ordering
+            int colInTile = absoluteX % 8;
             uint8_t pixel = ((tile_lsb >> (7 - colInTile)) & 0x01) | 
                             (((tile_msb >> (7 - colInTile)) & 0x01) << 1);
 
-            // Draw
+            // --- D. Draw & Buffer ---
             int idx = screenY * 256 + screenX;
+            
+            // Lookup RGB Color
             pixelBuffer[idx] = getColorFromPaletteRam(paletteID, pixel);
+            
+            // Mark Priority for Sprites
+            // (0 = Transparent, 1 = Opaque)
             priorityMap[idx] = (pixel != 0);
         }
     }
 }
-
 void Renderer::renderSprites(Bus& bus) {
     const auto& oam = bus.ppu.getOAM();
     uint8_t ppuctrl = bus.ppu.getControl();
@@ -339,7 +353,6 @@ void Renderer::renderSprites(Bus& bus) {
     }
 }
 
-// Helper to resolve the final ARGB color
 uint32_t Renderer::getColorFromPaletteRam(uint8_t palette, uint8_t pixel) {
     // Address Mapping:
     // Background Palette 0: $3F00-$3F03
