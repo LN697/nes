@@ -29,11 +29,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // 1. Initialize Bus & Renderer
     Bus bus;
     Renderer renderer;
 
-    // Initialize SDL Window (256x128 for Pattern Tables, scaled 3x)
     if (!renderer.init("NES Emulator - Pattern Tables", 256, 240, 3)) {
         std::cerr << "Failed to initialize Renderer/SDL.\n";
         return 1;
@@ -60,7 +58,13 @@ int main(int argc, char** argv) {
             int chr_size = chr_chunks * 8192; // 8KB per chunk
 
             int offset = 16 + ((buffer[6] & 0x04) ? 512 : 0);
+            // Byte 6, Bit 0: Mirroring (0 = Horizontal, 1 = Vertical)
+            bool vertical_mirroring = (buffer[6] & 0x01) != 0;
             
+            // Set Mirroring Mode
+            bus.ppu.setMirroring(vertical_mirroring ? PPU::Mirroring::VERTICAL : PPU::Mirroring::HORIZONTAL);
+            
+            log("Loader", std::string("Mirroring: ") + (vertical_mirroring ? "Vertical" : "Horizontal"));
             std::cout << "[Loader] iNES Header: " << prg_chunks << " PRG, " << chr_chunks << " CHR.\n";
 
             // 1. Load PRG-ROM (Code)
@@ -109,6 +113,10 @@ int main(int argc, char** argv) {
 
     try {
         // Frame Timing (NTSC)
+        using namespace std::chrono;
+        const nanoseconds frame_duration(16666667); // 1,000,000,000ns / 60fps
+        auto frame_start_time = high_resolution_clock::now();
+
         const int CYCLES_PER_FRAME = 29780;
         int cycles_this_frame = 0;
 
@@ -119,8 +127,9 @@ int main(int argc, char** argv) {
                 core.step();
                 
                 // PPU runs 3x faster than CPU
-                // Ensure core.last_cycles is set correctly in policies_map.hpp
-                int cpu_cycles = core.last_cycles;
+                int cpu_cycles = core.last_cycles + bus.dma_cycles;
+                bus.dma_cycles = 0;
+                
                 bus.ppu.step(3 * cpu_cycles);
                 
                 cycles_this_frame += cpu_cycles;
@@ -134,7 +143,12 @@ int main(int argc, char** argv) {
             if (!renderer.handleEvents()) {
                 break;
             }
+            bus.input.update(); // Poll input state once per frame
             renderer.draw(bus);
+
+            // Sleep until the next frame is due
+            std::this_thread::sleep_until(frame_start_time + frame_duration);
+            frame_start_time = high_resolution_clock::now();
         }
     } catch (const std::exception& e) {
         std::cerr << "\nCRASH: Exception caught in main loop: " << e.what() << "\n";

@@ -11,6 +11,10 @@ PPU::PPU() {
 
 PPU::~PPU() = default;
 
+void PPU::setMirroring(Mirroring mode) {
+    mirroring = mode;
+}
+
 uint8_t PPU::cpuRead(uint16_t address) {
     uint8_t data = 0x00;
     
@@ -24,7 +28,8 @@ uint8_t PPU::cpuRead(uint16_t address) {
             break;
 
         case 0x0004: // OAM DATA ($2004)
-            // TODO: Implement OAM
+            // Does not increment OAMADDR on read
+            data = oamData[oamaddr];
             break;
 
         case 0x0007: // DATA ($2007)
@@ -52,6 +57,14 @@ void PPU::cpuWrite(uint16_t address, uint8_t data) {
 
         case 0x0001: // MASK ($2001)
             ppumask = data;
+            break;
+
+        case 0x0003: // OAM ADDR ($2003)
+            oamaddr = data;
+            break;
+
+        case 0x0004: // OAM DATA ($2004)
+            writeOAMData(data);
             break;
 
         case 0x0005: // SCROLL ($2005)
@@ -90,6 +103,11 @@ void PPU::cpuWrite(uint16_t address, uint8_t data) {
     }
 }
 
+void PPU::writeOAMData(uint8_t data) {
+    oamData[oamaddr] = data;
+    oamaddr++; // Increment OAMADDR after write
+}
+
 void PPU::step(int cycles) {
     cycle += cycles;
     
@@ -116,33 +134,35 @@ void PPU::step(int cycles) {
 }
 
 uint8_t PPU::ppuRead(uint16_t address) {
-    address &= 0x3FFF; // PPU Address Space is 14 bits
+    address &= 0x3FFF;
     
     if (address <= 0x1FFF) {
-        // Pattern Tables (CHR-ROM) from Cartridge
-        // Standard NROM mapping: Direct linear access
+        // Pattern Tables
         if (address < chrROM.size()) {
             return chrROM[address];
         }
         return 0;
     }
     else if (address >= 0x2000 && address <= 0x3EFF) {
-        address &= 0x0FFF; // Mask to 4KB array
+        address &= 0x0FFF;
         
-        // Simple Vertical Mirroring logic (Common for scrolling games)
-        // Adjust this based on Mapper later!
-        if (address <= 0x03FF)      return tblName[address];         // NT0
-        else if (address >= 0x0400 && address <= 0x07FF) return tblName[address + 4];     // NT1 (Side) - Mirrored?
-        else if (address >= 0x0800 && address <= 0x0BFF) return tblName[address];         // NT2 (Bottom) - Mirrored to 0?
-        else if (address >= 0x0C00 && address <= 0x0FFF) return tblName[address + 4];     // NT3
+        if (mirroring == Mirroring::VERTICAL) {
+            return tblName[address & 0x07ff];
+        } else if (mirroring == Mirroring::HORIZONTAL) {
+            if (address & 0x0800) {
+                // Upper Half ($2800+) -> Offset 0x400 in storage (Table 1)
+                return tblName[0x0400 + (address & 0x03FF)];
+            } else {
+                // Lower Half ($2000+) -> Offset 0x000 in storage (Table 0)
+                return tblName[address & 0x03FF];
+            }
+        }
         
-        // Use basic fallback for now:
-        return tblName[address & 0x07FF];
+        return 0;
     }
     else if (address >= 0x3F00 && address <= 0x3FFF) {
         // Palettes
         address &= 0x001F;
-        // Hardware Mirroring: 3F10/3F14/3F18/3F1C mirror 3F00/3F04/3F08/3F0C
         if (address == 0x0010) address = 0x0000;
         if (address == 0x0014) address = 0x0004;
         if (address == 0x0018) address = 0x0008;
@@ -158,8 +178,19 @@ void PPU::ppuWrite(uint16_t address, uint8_t data) {
     if (address >= 0x2000 && address <= 0x3EFF) {
         // Nametables
         address &= 0x0FFF;
-        // Simple Mirroring (Vertical)
-        tblName[address & 0x07FF] = data;
+        
+        if (mirroring == Mirroring::VERTICAL) {
+            tblName[address & 0x07FF] = data;
+        }
+        else if (mirroring == Mirroring::HORIZONTAL) {
+            if (address & 0x0800) {
+                // Upper Half ($2800+) -> Offset 0x400 in storage (Table 1)
+                tblName[0x0400 + (address & 0x03FF)] = data;
+            } else {
+                // Lower Half ($2000+) -> Offset 0x000 in storage (Table 0)
+                tblName[address & 0x03FF] = data;
+            }
+        }
     }
     else if (address >= 0x3F00 && address <= 0x3FFF) {
         // Palettes
@@ -174,10 +205,26 @@ void PPU::ppuWrite(uint16_t address, uint8_t data) {
 
 void PPU::setCHR(const std::vector<uint8_t>& rom) {
     chrROM = rom;
-    // Resize to at least 8KB (standard size) to prevent OOB
+
     if (chrROM.size() < 8192) chrROM.resize(8192);
 }
 
-uint8_t PPU::getControl() {
+uint8_t PPU::getControl() const {
     return ppuctrl;
+}
+
+uint8_t PPU::getMask() const {
+    return ppumask;
+}
+
+const std::array<uint8_t, 256>& PPU::getOAM() const {
+    return oamData;
+}
+
+uint16_t PPU::getVRAMAddr() const {
+    return v_ram_addr;
+}
+
+uint8_t PPU::getFineX() const {
+    return fine_x;
 }

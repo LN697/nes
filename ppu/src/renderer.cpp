@@ -24,8 +24,8 @@ const std::array<Renderer::RGB, 64> Renderer::systemPalette = {{
 }};
 
 Renderer::Renderer() {
-    // 256x128 buffer for two side-by-side pattern tables
     pixelBuffer.resize(256 * 240);
+    priorityMap.resize(256 * 240);
     log("Renderer", "Renderer initialized.");
 }
 
@@ -74,24 +74,17 @@ bool Renderer::handleEvents() {
 }
 
 void Renderer::draw(Bus& bus) {
-    // 1. Decode both Pattern Tables from PPU Memory
-    // Table 0: $0000 - $0FFF
-    // renderPatternTable(0, 0, bus); 
-    // Table 1: $1000 - $1FFF
-    // renderPatternTable(1, 0, bus);
+    for (int i = 0; i < 32; ++i) {
+        paletteCache[i] = bus.ppu.ppuRead(0x3F00 + i);
+    }
 
-    renderNameTable(0, bus); // Draw Nametable 0 for testing
-
-    // 2. Upload to Texture
+    renderNameTable(bus);
+    renderSprites(bus);
+    
     SDL_UpdateTexture(texture, nullptr, pixelBuffer.data(), 256 * sizeof(uint32_t));
-
-    // 3. Render
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    
-    // Draw the pattern tables to the screen
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
-    
     SDL_RenderPresent(renderer);
 }
 
@@ -162,63 +155,184 @@ void Renderer::renderPatternTable(int tableIndex, uint8_t /* paletteID */, Bus& 
     }
 }
 
-void Renderer::renderNameTable(int ntID, Bus& bus) {
-    // 1. Calculate Nametable Base Address
-    // ID 0=$2000, 1=$2400, 2=$2800, 3=$2C00
-    uint16_t baseAddr = 0x2000 + (ntID * 0x400);
+void Renderer::renderNameTable(Bus& bus) {
+    // We ignore the passed ntID and calculate the real one from PPU Scroll registers.
+    
+    // 1. Get Scroll Info
+    uint16_t v = bus.ppu.getVRAMAddr();
+    uint8_t fine_x = bus.ppu.getFineX();
+    uint8_t ppuctrl = bus.ppu.getControl();
+    
+    // Extract Base Nametable (0-3) from the "v" register (Bits 10-11)
+    // This tells us which Nametable is currently top-left.
+    uint8_t nametableX = (v >> 10) & 1;
+    uint8_t nametableY = (v >> 11) & 1;
+    
+    // Extract Coarse X/Y (The tile offset within that nametable)
+    // Coarse X (0-31) is bits 0-4
+    // Coarse Y (0-29) is bits 5-9
+    uint8_t coarseX = v & 0x001F;
+    uint8_t coarseY = (v >> 5) & 0x001F;
 
     // 2. Determine Pattern Table for Background
-    // This is normally controlled by PPUCTRL ($2000) Bit 4.
-    // Since we don't have a public getter for PPUCTRL yet, we hardcode it.
-    // For Super Mario Bros, the background uses Table 1 ($1000).
-    // TODO: Implement bus.ppu.getControl() to replace this hardcoded value.
-    uint16_t bgPatternBase = (bus.ppu.getControl() & 0x10) ? 0x1000 : 0x0000;
+    uint16_t bgPatternBase = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
 
-    // Iterate over the 32x30 tile grid (256x240 pixels)
-    for (int y = 0; y < 30; y++) {
-        for (int x = 0; x < 32; x++) {
+    // 3. Render the Viewport (256x240)
+    // We iterate SCREEN PIXELS, not tiles, to handle the fine scroll seamlessly.
+    // (Optimization: In a real engine we'd iterate tiles and clip, but this is clearer).
+    
+    for (int screenY = 0; screenY < 240; screenY++) {
+        // Calculate effective Y in Nametable space
+        // TODO: Implement Fine Y scroll (bits 12-14 of v). For SMB (Horizontal), Coarse Y is mostly enough.
+        // For strict accuracy we need Fine Y, but let's stick to the tile grid for simplicity first.
+        int tileY = (coarseY + (screenY / 8)) % 30; 
+        
+        // Determine which Vertical Nametable we are in (Y-mirroring wrap)
+        // SMB is Horizontal Scrolling, so we mostly care about X wrap.
+        // If we wrap Y (>= 30 rows), we might toggle NT bit Y. (Omitted for simplicity).
+        int currentNtY = nametableY;
+
+        for (int screenX = 0; screenX < 256; screenX++) {
             
-            // --- Step A: Fetch Tile ID ---
-            // The Nametable is a simple array of bytes (0-959)
-            uint16_t tileAddr = baseAddr + (y * 32) + x;
+            // Calculate effective X in Nametable space (including Fine X offset)
+            int pixelX = screenX + (coarseX * 8) + fine_x;
+            int tileX = (pixelX / 8);
+            
+            // Handle X Wrap-around (Crossing into the next Nametable)
+            // If we go past 32 columns (pixel 256), we toggle the Horizontal Nametable bit
+            int currentNtX = nametableX + (tileX / 32);
+            tileX %= 32;
+            currentNtX %= 2; // Wrap 0-1
+            
+            // Nametable ID (0-3)
+            int ntID = (currentNtY * 2) + currentNtX;
+            uint16_t baseAddr = 0x2000 + (ntID * 0x400);
+            
+            // --- Fetch Tile & Attribute (Cached for speed in real emu, explicit here) ---
+            uint16_t tileAddr = baseAddr + (tileY * 32) + tileX;
             uint8_t tileID = bus.ppu.ppuRead(tileAddr);
-
-            // --- Step B: Fetch Attribute (Color Palette) ---
-            // The Attribute Table starts after the Nametable (offset $03C0).
-            // Each byte controls a 4x4 tile block (32x32 pixels).
-            uint16_t attrAddr = baseAddr + 0x03C0 + (y / 4) * 8 + (x / 4);
-            uint8_t attrByte = bus.ppu.ppuRead(attrAddr);
             
-            // A byte contains 4 palettes (2 bits each). We must find which quadrant we are in.
-            // Quadrants: TopLeft(0), TopRight(2), BottomLeft(4), BottomRight(6)
-            // Logic: if y%4 >= 2, we are bottom. if x%4 >= 2, we are right.
-            uint8_t shift = ((y & 2) << 1) | (x & 2);
+            uint16_t attrAddr = baseAddr + 0x03C0 + (tileY / 4) * 8 + (tileX / 4);
+            uint8_t attrByte = bus.ppu.ppuRead(attrAddr);
+            uint8_t shift = ((tileY & 2) << 1) | (tileX & 2);
             uint8_t paletteID = (attrByte >> shift) & 0x03;
 
-            // --- Step C: Fetch Pattern Data (Pixels) ---
-            // Each tile is 16 bytes (Plane 0 + Plane 1)
-            uint16_t patternAddr = bgPatternBase + (tileID * 16);
+            // --- Fetch Pixel ---
+            // Which row of the tile?
+            int rowInTile = screenY % 8; // Simplified Fine Y
+            int colInTile = pixelX % 8;
+            
+            uint16_t patternAddr = bgPatternBase + (tileID * 16) + rowInTile;
+            uint8_t tile_lsb = bus.ppu.ppuRead(patternAddr);
+            uint8_t tile_msb = bus.ppu.ppuRead(patternAddr + 8);
+            
+            uint8_t pixel = ((tile_lsb >> (7 - colInTile)) & 0x01) | 
+                            (((tile_msb >> (7 - colInTile)) & 0x01) << 1);
 
-            for (int row = 0; row < 8; row++) {
-                // Read the two bitplanes for this row
-                uint8_t tile_lsb = bus.ppu.ppuRead(patternAddr + row);
-                uint8_t tile_msb = bus.ppu.ppuRead(patternAddr + row + 8);
+            // Draw
+            int idx = screenY * 256 + screenX;
+            pixelBuffer[idx] = getColorFromPaletteRam(paletteID, pixel);
+            priorityMap[idx] = (pixel != 0);
+        }
+    }
+}
 
-                for (int col = 0; col < 8; col++) {
-                    // Combine bits to get pixel index (0-3)
-                    // Pixels are stored MSB to LSB (Left to Right)
-                    uint8_t pixel = ((tile_lsb >> (7 - col)) & 0x01) | 
-                                    (((tile_msb >> (7 - col)) & 0x01) << 1);
+void Renderer::renderSprites(Bus& bus) {
+    const auto& oam = bus.ppu.getOAM();
+    uint8_t ppuctrl = bus.ppu.getControl();
+    
+    // Bit 3: Pattern Table for 8x8 sprites (0: $0000; 1: $1000)
+    // Ignored in 8x16 mode.
+    uint16_t spritePatternBase = (ppuctrl & 0x08) ? 0x1000 : 0x0000;
+    
+    // Bit 5: Sprite Size (0: 8x8; 1: 8x16)
+    bool size_8x16 = (ppuctrl & 0x20);
+    int spriteHeight = size_8x16 ? 16 : 8;
 
-                    // Calculate position in the output buffer
-                    int bufX = (x * 8) + col;
-                    int bufY = (y * 8) + row;
-                    
-                    // Safety Bounds Check
-                    if (bufX < 256 && bufY < 240) {
-                        int idx = bufY * 256 + bufX;
-                        pixelBuffer[idx] = getColorFromPaletteRam(paletteID, pixel, bus);
+    // Iterate through 64 sprites
+    // Note: NES renders sprites with lower indices ON TOP of higher indices.
+    // In a painter's algorithm (drawing linearly), we must draw 63 down to 0
+    // so that Sprite 0 is drawn LAST (on top).
+    for (int i = 63; i >= 0; i--) {
+        // OAM Layout:
+        // Byte 0: Y Position (Screen Y - 1)
+        // Byte 1: Tile ID
+        // Byte 2: Attributes
+        // Byte 3: X Position
+        
+        uint8_t y = oam[i*4 + 0];
+        uint8_t tileID = oam[i*4 + 1];
+        uint8_t attr = oam[i*4 + 2];
+        uint8_t x = oam[i*4 + 3];
+
+        // Sprite Y is "Top - 1", so we add 1.
+        int spriteY = y + 1;
+        
+        // Hide sprites off-screen (Y >= 240 usually)
+        if (spriteY >= 240) continue;
+
+        // Attributes
+        // Bit 0-1: Palette (4-7)
+        uint8_t paletteID = (attr & 0x03) + 4; // Add 4 because sprites use the upper 4 palettes
+        // Bit 5: Priority (0: Front, 1: Back)
+        bool priorityBack = (attr & 0x20);
+        // Bit 6: Flip Horizontal
+        bool flipH = (attr & 0x40);
+        // Bit 7: Flip Vertical
+        bool flipV = (attr & 0x80);
+
+        // Render Rows (8 or 16)
+        for (int row = 0; row < spriteHeight; row++) {
+            // Calculate which row of the sprite we are drawing (handling Vertical Flip)
+            int currentSpriteRow = flipV ? (spriteHeight - 1 - row) : row;
+
+            uint16_t patternAddr;
+            
+            if (!size_8x16) {
+                // --- 8x8 Mode ---
+                patternAddr = spritePatternBase + (tileID * 16) + currentSpriteRow;
+            } else {
+                // --- 8x16 Mode ---
+                // Even tiles use $0000, Odd tiles use $1000
+                uint16_t table = (tileID & 0x01) ? 0x1000 : 0x0000;
+                uint8_t index = tileID & 0xFE; // Ignore bottom bit for index
+                
+                // Top half (rows 0-7) uses index, Bottom half (rows 8-15) uses index+1
+                if (currentSpriteRow < 8) {
+                    patternAddr = table + (index * 16) + currentSpriteRow;
+                } else {
+                    patternAddr = table + ((index + 1) * 16) + (currentSpriteRow - 8);
+                }
+            }
+
+            // Fetch Bitplanes
+            uint8_t tile_lsb = bus.ppu.ppuRead(patternAddr);
+            uint8_t tile_msb = bus.ppu.ppuRead(patternAddr + 8);
+
+            // Render Columns (8 pixels)
+            for (int col = 0; col < 8; col++) {
+                // Handle Horizontal Flip (read bits from other end)
+                int currentSpriteCol = flipH ? col : (7 - col);
+                
+                uint8_t pixel = ((tile_lsb >> currentSpriteCol) & 0x01) | 
+                                (((tile_msb >> currentSpriteCol) & 0x01) << 1);
+
+                // If pixel is transparent (0), sprites don't draw
+                if (pixel == 0) continue;
+
+                int bufX = x + col;
+                int bufY = spriteY + row;
+
+                if (bufX < 256 && bufY < 240) {
+                    int idx = bufY * 256 + bufX;
+
+                    // Priority Check:
+                    // If Priority is "Back" AND the Background Pixel is Opaque, skip drawing.
+                    if (priorityBack && priorityMap[idx]) {
+                        continue;
                     }
+
+                    pixelBuffer[idx] = getColorFromPaletteRam(paletteID, pixel);
                 }
             }
         }
@@ -226,7 +340,7 @@ void Renderer::renderNameTable(int ntID, Bus& bus) {
 }
 
 // Helper to resolve the final ARGB color
-uint32_t Renderer::getColorFromPaletteRam(uint8_t palette, uint8_t pixel, Bus& bus) {
+uint32_t Renderer::getColorFromPaletteRam(uint8_t palette, uint8_t pixel) {
     // Address Mapping:
     // Background Palette 0: $3F00-$3F03
     // Background Palette 1: $3F05-$3F07
@@ -243,7 +357,7 @@ uint32_t Renderer::getColorFromPaletteRam(uint8_t palette, uint8_t pixel, Bus& b
     }
     
     // Read index from PPU Palette RAM (masked to 6 bits)
-    uint8_t nesColorIndex = bus.ppu.ppuRead(addr) & 0x3F;
+    uint8_t nesColorIndex = paletteCache[addr & 0x001F] & 0x3F;
     
     // Lookup RGB value from system palette
     const auto& rgb = systemPalette[nesColorIndex];

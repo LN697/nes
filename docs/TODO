@@ -1,46 +1,5 @@
-Phase 1: Interaction (The Nervous System)
-Goal: Make the game respond to key presses.
-
-1. Implement Controller I/O ($4016)
-The NES controller is a simple 8-bit Shift Register.
-
-[ ] Create Input Class: Needs to store the state of 8 buttons (A, B, Select, Start, Up, Down, Left, Right).
-
-[ ] Map Memory $4016 (Read): When the CPU reads $4016, return the current bit of the shift register (1 or 0) and shift the internal state. *
-
-[ ] Map Memory $4016 (Write): When the CPU writes 1 then 0 to $4016 (Strobe), "Latch" the current SDL keyboard state into the internal shift register.
-
-[ ] Integrate SDL Events: In main.cpp, inside renderer.handleEvents(), map SDL_KEYDOWN / SDL_KEYUP to your new Input class variables.
-
-2. Implement Mapper Mirroring
-Super Mario Bros. uses Vertical Mirroring (Horizontal Scrolling).
-
-[ ] Parse Header Bit 0: In your ROM loader, read bit 0 of Byte 6. 0 = Horizontal, 1 = Vertical.
-
-[ ] Update Bus::read / Bus::write: Change your hardcoded $07FF mask in the Nametable logic. Use the parsed Mirroring Mode to route $2000/$2800 (Vertical) or $2000/$2400 (Horizontal) to the same physical memory index.
-
 Phase 2: Advanced Graphics (The Visuals)
 Goal: Make Mario appear and the screen scroll.
-
-3. Implement OAM (Object Attribute Memory)
-Sprites (Mario, Goombas) are stored in a separate 256-byte memory area called OAM.
-
-[ ] Implement $2003 (OAMADDR): Store the address pointer.
-
-[ ] Implement $2004 (OAMDATA): Allow CPU to write sprite data byte-by-byte.
-
-[ ] Implement $4014 (OAMDMA): Crucial. This is how games bulk-load sprites. When written, pause the CPU for 513 cycles and copy 256 bytes from CPU RAM (usually $0200-$02FF) to PPU OAM.
-
-4. Render Sprites
-[ ] Sprite Evaluation: In your Renderer, iterate through the 64 sprites in OAM.
-
-[ ] 8x8 vs 8x16: Check PPUCTRL bit 5. SMB uses 8x8, but others use 8x16.
-
-[ ] Priority: Implement Background/Foreground priority (Bit 5 of attribute).
-
-[ ] Flipping: Implement Horizontal/Vertical flipping (Bits 6 and 7).
-
-[ ] Draw: Overlay these pixels on top of your Nametable buffer (respecting transparency!).
 
 5. Implement Scrolling
 Currently, your renderer draws Nametable 0 at (0,0).
