@@ -1,0 +1,669 @@
+#include "ppu.hpp"
+#include <iostream>
+#include <cstring>
+#include <algorithm>
+
+// Standard 2C02 System Palette
+const std::array<uint32_t, 64> PPU::systemPalette = {{
+    0xFF7C7C7C, 0xFF0000FC, 0xFF0000BC, 0xFF4428BC, 0xFF940084, 0xFFA80020, 0xFFA81000, 0xFF881400,
+    0xFF503000, 0xFF007800, 0xFF006800, 0xFF005800, 0xFF004058, 0xFF000000, 0xFF000000, 0xFF000000,
+    0xFFBCBCBC, 0xFF0078F8, 0xFF0058F8, 0xFF6844FC, 0xFFD800CC, 0xFFE40058, 0xFFF83800, 0xFFE45C10,
+    0xFFAC7C00, 0xFF00B800, 0xFF00A800, 0xFF00A844, 0xFF008888, 0xFF000000, 0xFF000000, 0xFF000000,
+    0xFFF8F8F8, 0xFF3CBCFC, 0xFF6888FC, 0xFF9878F8, 0xFFF878F8, 0xFFF85898, 0xFFF87858, 0xFFFCA044,
+    0xFFF8B800, 0xFFB8F818, 0xFF58D854, 0xFF58F898, 0xFF00E8D8, 0xFF787878, 0xFF000000, 0xFF000000,
+    0xFFFCFCFC, 0xFFA4E4FC, 0xFFB8B8F8, 0xFFD8B8F8, 0xFFF8B8F8, 0xFFF8A4C0, 0xFFF0D0B0, 0xFFFCE0A8,
+    0xFFF8D878, 0xFFD8F878, 0xFFB8F8B8, 0xFFB8F8D8, 0xFF00FCFC, 0xFFF8D8F8, 0xFF000000, 0xFF000000
+}};
+
+PPU::PPU() {
+    tblName.fill(0);
+    tblPalette.fill(0);
+    oamData.fill(0);
+    pixels.resize(256 * 240);
+    pixels.assign(256 * 240, 0xFF000000);
+    spriteScanline.reserve(8); // Pre-allocate for Secondary OAM
+    
+    // Default to Vertical as it is safer for common games
+    mirroring = Mirroring::VERTICAL;
+    #ifdef UNIT_TEST
+    debug_bg_pixel.assign(256 * 240, 0);
+    debug_bg_palette.assign(256 * 240, 0);
+    debug_sp_pixel.assign(256 * 240, 0);
+    debug_sp_palette.assign(256 * 240, 0);
+    debug_write_cycle.assign(256 * 240, 0);
+    debug_write_scanline.assign(256 * 240, 0);
+    debug_write_vram.assign(256 * 240, 0);
+    master_cycle = 0;
+    #endif
+}
+
+PPU::~PPU() = default;
+
+void PPU::setMirroring(Mirroring mode) { 
+    mirroring = mode; 
+}
+
+const std::vector<uint32_t>& PPU::getScreen() const { 
+    return pixels;
+}
+
+const std::array<uint8_t, 256>& PPU::getOAM() const { 
+    return oamData;
+}
+
+void PPU::setCHR(const std::vector<uint8_t>& rom) { 
+    chrROM = rom; 
+    if (chrROM.size() < 8192) {
+        chrROM.resize(8192); 
+    }
+}
+
+// =============================================================
+// CPU INTERFACE
+// =============================================================
+
+uint8_t PPU::cpuRead(uint16_t address) {
+    uint8_t data = 0x00;
+    switch (address & 0x0007) {
+        case 0x0002: // STATUS
+            // Status top 3 bits + residual lower 5 bits (noise)
+            data = (ppustatus & 0xE0) | (ppu_data_buffer & 0x1F);
+            ppustatus &= ~0x80; // Clear VBlank
+            address_latch = false;
+            break;
+        case 0x0004: // OAM
+            data = oamData[oamaddr];
+            break;
+        case 0x0007: // DATA
+            // 1. Output the contents of the buffer to the CPU
+            data = ppu_data_buffer;
+            
+            // 2. Fill the buffer with the VRAM at the current address
+            // Note: We deliberately use standard 'read' here, NOT palette read
+            ppu_data_buffer = ppuRead(v_ram_addr);
+            
+            // 3. IF the address was in Palette range, override the Output with immediate data
+            // (But keeping the buffer update we just did in step 2!)
+            if (v_ram_addr >= 0x3F00) {
+                data = ppuRead(v_ram_addr);
+            }
+            
+            v_ram_addr += (ppuctrl & 0x04) ? 32 : 1;
+            break;
+    }
+    return data;
+}
+
+void PPU::cpuWrite(uint16_t address, uint8_t data) {
+    switch (address & 0x0007) {
+        case 0x0000: // CTRL
+            ppuctrl = data;
+            t_ram_addr = (t_ram_addr & 0xF3FF) | ((static_cast<uint16_t>(data) & 0x03) << 10);
+            break;
+        case 0x0001: // MASK
+            ppumask = data;
+            break;
+        case 0x0003: // OAMADDR
+            oamaddr = data; 
+            break;
+        case 0x0004: // OAMDATA
+            oamData[oamaddr++] = data; 
+            break;
+        case 0x0005: // SCROLL
+            if (!address_latch) {
+                fine_x = data & 0x07;
+                t_ram_addr = (t_ram_addr & 0xFFE0) | ((data >> 3) & 0x1F);
+                address_latch = true;
+            } else {
+                t_ram_addr = (t_ram_addr & 0x8FFF) | ((data & 0x07) << 12);
+                t_ram_addr = (t_ram_addr & 0xFC1F) | ((data & 0xF8) << 2);
+                address_latch = false;
+            }
+            break;
+        case 0x0006: // ADDR
+            if (!address_latch) {
+                t_ram_addr = (t_ram_addr & 0x00FF) | ((static_cast<uint16_t>(data) & 0x3F) << 8);
+                address_latch = true;
+            } else {
+                t_ram_addr = (t_ram_addr & 0xFF00) | data;
+                v_ram_addr = t_ram_addr;
+                address_latch = false;
+            }
+            break;
+        case 0x0007: // DATA
+            ppuWrite(v_ram_addr, data);
+            v_ram_addr += (ppuctrl & 0x04) ? 32 : 1;
+            break;
+    }
+}
+
+void PPU::startOAMDMA(const std::array<uint8_t, 256>& data) {
+    for (int i = 0; i < 256; ++i) {
+        oamData[(oamaddr + i) & 0xFF] = data[i];
+    }
+}
+
+// =============================================================
+// SCROLLING HELPERS
+// =============================================================
+
+void PPU::incrementScrollX() {
+    if ((v_ram_addr & 0x001F) == 31) {
+        v_ram_addr &= ~0x001F;
+        v_ram_addr ^= 0x0400;
+    } else {
+        v_ram_addr += 1;
+    }
+}
+
+void PPU::incrementScrollY() {
+    if ((v_ram_addr & 0x7000) != 0x7000) {
+        v_ram_addr += 0x1000;
+    } else {
+        v_ram_addr &= ~0x7000;
+        int y = (v_ram_addr & 0x03E0) >> 5;
+        if (y == 29) {
+            y = 0;
+            v_ram_addr ^= 0x0800;
+        } else if (y == 31) {
+            y = 0;
+        } else {
+            y += 1;
+        }
+        v_ram_addr = (v_ram_addr & ~0x03E0) | (y << 5);
+    }
+}
+
+#ifdef UNIT_TEST
+void PPU::test_incrementScrollX() { incrementScrollX(); }
+void PPU::test_incrementScrollY() { incrementScrollY(); }
+void PPU::test_transferAddressX() { transferAddressX(); }
+void PPU::test_transferAddressY() { transferAddressY(); }
+#endif
+
+void PPU::transferAddressX() {
+    v_ram_addr = (v_ram_addr & 0xFBE0) | (t_ram_addr & 0x041F);
+}
+
+void PPU::transferAddressY() {
+    v_ram_addr = (v_ram_addr & 0x841F) | (t_ram_addr & 0x7BE0);
+}
+
+void PPU::loadBackgroundShifters() {
+    bg_shifter_pattern_lo = (bg_shifter_pattern_lo & 0xFF00) | bg_next_tile_lsb;
+    bg_shifter_pattern_hi = (bg_shifter_pattern_hi & 0xFF00) | bg_next_tile_msb;
+    
+    bg_shifter_attrib_lo  = (bg_shifter_attrib_lo & 0xFF00) | ((bg_next_tile_attrib & 0b01) ? 0xFF : 0x00);
+    bg_shifter_attrib_hi  = (bg_shifter_attrib_hi & 0xFF00) | ((bg_next_tile_attrib & 0b10) ? 0xFF : 0x00);
+}
+
+void PPU::updateShifters() {
+    if (ppumask & 0x18) { // Only if rendering background or sprites
+        bg_shifter_pattern_lo <<= 1;
+        bg_shifter_pattern_hi <<= 1;
+        bg_shifter_attrib_lo <<= 1;
+        bg_shifter_attrib_hi <<= 1;
+    }
+}
+
+// =============================================================
+// MAIN CYCLE LOOP
+// =============================================================
+
+bool PPU::step(int cycles) {
+    bool frame_done = false;
+
+    for (int i = 0; i < cycles; ++i) {
+    #ifdef UNIT_TEST
+        master_cycle++;
+    #endif
+        
+        // --- VISIBLE SCANLINES (-1 to 239) ---
+        if (scanline >= -1 && scanline <= 239) {
+            
+            // --- ODD FRAME SKIP (NTSC) ---
+            if (scanline == -1 && cycle == 339 && (frame_count % 2 == 1) && (ppumask & 0x18)) {
+                cycle = 340; // Skip cycle 339
+            }
+
+            if (scanline == 0 && cycle == 0 && (ppumask & 0x18)) {
+                 cycle = 1; // "Dot 0" skip
+            }
+
+            // Clear VBlank/Overflow/Sprite0 at -1, 1
+            if (scanline == -1 && cycle == 1) {
+                ppustatus &= ~(0x80 | 0x40 | 0x20); 
+                nmiOccurred = false; 
+                bSpriteZeroHitPossible = false;
+            }
+
+            // --- 1. RENDER PIXEL (Immediate) ---
+            if (scanline >= 0 && scanline <= 239 && cycle >= 1 && cycle <= 256) {
+                renderPixel();
+            }
+
+            // --- 2. UPDATE SHIFTERS (After Render) ---
+            if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 337)) {
+                updateShifters();
+                
+                // --- 3. FETCH DATA ---
+                switch ((cycle - 1) % 8) {
+                    case 0:
+                        loadBackgroundShifters();
+                        bg_next_tile_id = ppuRead(0x2000 | (v_ram_addr & 0x0FFF));
+                        break;
+                    case 2:
+                        {
+                            uint16_t tile_x = v_ram_addr & 0x001F;
+                            uint16_t tile_y = (v_ram_addr & 0x03E0) >> 5;
+                            uint16_t nt_idx = (v_ram_addr & 0x0C00) >> 10;
+                            uint16_t attr_addr = 0x23C0 | (nt_idx << 10) | ((tile_y / 4) << 3) | (tile_x / 4);
+                            uint8_t attr_byte = ppuRead(attr_addr);
+                            bool bottom = tile_y & 2;
+                            bool right  = tile_x & 2;
+                            uint8_t shift = (bottom ? 4 : 0) | (right ? 2 : 0);
+                            bg_next_tile_attrib = (attr_byte >> shift) & 0x03;
+                        }
+                        break;
+                    case 4:
+                        {
+                            uint16_t pattern_base = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
+                            uint16_t tile_addr = pattern_base + (static_cast<uint16_t>(bg_next_tile_id) * 16) + ((v_ram_addr >> 12) & 0x07);
+                            bg_next_tile_lsb = ppuRead(tile_addr);
+                        }
+                        break;
+                    case 6:
+                        {
+                            uint16_t pattern_base = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
+                            uint16_t tile_addr = pattern_base + (static_cast<uint16_t>(bg_next_tile_id) * 16) + ((v_ram_addr >> 12) & 0x07);
+                            bg_next_tile_msb = ppuRead(tile_addr + 8);
+                        }
+                        break;
+                    case 7:
+                        if (ppumask & 0x18) incrementScrollX();
+                        break;
+                }
+            }
+
+            if (cycle == 256) {
+                incrementScrollY();
+            }
+
+            if (cycle == 257) {
+                loadBackgroundShifters();
+
+                // NEW CODE: Only transfer if rendering is ENABLED
+                if (ppumask & 0x18) {
+                    transferAddressX();
+                }
+
+                // Sprite evaluation happens regardless, or usually also checked. 
+                // For safety, keep sprite eval outside, but protect the transfer.
+                if (scanline >= -1 && scanline < 239) {
+                    evaluateSprites();
+                }
+            }
+
+            // NEW CODE: Only transfer if rendering is ENABLED
+            if (scanline == -1 && cycle >= 280 && cycle <= 304) {
+                if (ppumask & 0x18) { // Check Show BG (0x08) or Show Sprites (0x10)
+                    transferAddressY();
+                }
+            }
+        }
+
+        if (scanline == 241 && cycle == 1) {
+            ppustatus |= 0x80; 
+            if (ppuctrl & 0x80) nmiOccurred = true;
+            frame_done = true;
+            frame_count++;
+        }
+        
+        cycle++;
+        if (cycle >= 341) {
+            cycle = 0;
+            scanline++;
+            if (scanline >= 262) {
+                scanline = -1;
+                frame_complete = true;
+            }
+        }
+    }
+    return frame_done;
+}
+
+// =============================================================
+// SPRITE EVALUATION
+// =============================================================
+
+void PPU::evaluateSprites() {
+    // This runs at cycle 257. It prepares `spriteScanline` for the
+    // scanline that follows the current `scanline`.
+    // Effectively, we are looking for sprites that will be visible on (scanline + 1).
+    
+    spriteScanline.clear();
+    sprite_count = 0;
+    
+    // Flag to track if sprite 0 is in the next batch
+    bool next_sprite_zero_hit = false;
+    
+    int OAM_entry = 0;
+    int target_y = scanline; // We are evaluating for the *current* raster process
+    // Note: Usually evaluation happens for T+1. 
+    // But since renderPixel() draws T, we need data for T.
+    // However, PPU hardware fetches data for T+1 during T.
+    // To fit your immediate-render architecture, we will populate 
+    // the buffer for the NEXT scanline here, and renderPixel will use it then.
+    // So target is scanline + 1 (the one we are about to enter after cycle 341)
+    
+    int next_scanline = scanline + 1;
+    if (next_scanline == 262) next_scanline = 0; // Wrap around if needed, though usually handled at frame start
+    
+    uint8_t sprite_height = (ppuctrl & 0x20) ? 16 : 8;
+
+    for (OAM_entry = 0; OAM_entry < 64; OAM_entry++) {
+        int diff_y = next_scanline - oamData[OAM_entry * 4];
+
+        if (diff_y >= 0 && diff_y < sprite_height) {
+            if (sprite_count < 8) {
+                ObjectAttrEntry entry;
+                entry.y = oamData[OAM_entry * 4];
+                entry.id = oamData[OAM_entry * 4 + 1];
+                entry.attribute = oamData[OAM_entry * 4 + 2];
+                entry.x = oamData[OAM_entry * 4 + 3];
+                entry.isZero = (OAM_entry == 0); // <--- Tag it explicitly here
+                spriteScanline.push_back(entry);
+                sprite_count++;
+            } else {
+                // Sprite Overflow Trigger
+                ppustatus |= 0x20; 
+                break; // Hardware bug: simplified here to just break
+            }
+        }
+    }
+    bSpriteZeroBeingRendered = next_sprite_zero_hit;
+}
+
+
+// =============================================================
+// PIXEL PIPELINE
+// =============================================================
+
+void PPU::renderPixel() {
+    uint8_t bg_pixel = 0x00;
+    uint8_t bg_palette = 0x00;
+    bool bg_opaque = false;
+
+    if (ppumask & 0x08) { // Show Background
+        uint16_t bit_mux = 0x8000 >> fine_x;
+
+        uint8_t p0 = (bg_shifter_pattern_lo & bit_mux) > 0;
+        uint8_t p1 = (bg_shifter_pattern_hi & bit_mux) > 0;
+        bg_pixel = (p1 << 1) | p0;
+
+        uint8_t pal0 = (bg_shifter_attrib_lo & bit_mux) > 0;
+        uint8_t pal1 = (bg_shifter_attrib_hi & bit_mux) > 0;
+        bg_palette = (pal1 << 1) | pal0;
+
+        if (bg_pixel != 0) bg_opaque = true;
+    }
+
+    uint8_t sp_pixel = 0x00;
+    uint8_t sp_palette = 0x00;
+    bool sp_priority = false; 
+    bool sp_0_rendered = false;
+
+    if (ppumask & 0x10) { // Show Sprites
+        // Iterate only through the pre-evaluated sprites (Max 8)
+        for (const auto& sprite : spriteScanline) {
+            
+            // Current X position relative to sprite X
+            int diff_x = (cycle - 1) - sprite.x;
+            
+            if (diff_x >= 0 && diff_x < 8) {
+                // Determine pattern address
+                uint8_t height = (ppuctrl & 0x20) ? 16 : 8;
+                bool flip_h = sprite.attribute & 0x40;
+                bool flip_v = sprite.attribute & 0x80;
+                
+                // Calculate correct row within sprite
+                int diff_y = scanline - sprite.y; 
+
+                if (flip_h) diff_x = 7 - diff_x;
+                if (flip_v) diff_y = height - 1 - diff_y;
+                
+                uint16_t ptrn_addr = 0;
+                if (height == 8) {
+                     uint16_t base = (ppuctrl & 0x08) ? 0x1000 : 0x0000;
+                     ptrn_addr = base + (sprite.id * 16) + diff_y;
+                } else {
+                     // 8x16 Mode
+                     uint16_t base = (sprite.id & 1) ? 0x1000 : 0x0000;
+                     ptrn_addr = base + ((sprite.id & 0xFE) * 16) + diff_y;
+                     // If processing bottom half of 8x16, offset by 16 bytes
+                     if (diff_y >= 8) ptrn_addr += 16; 
+                }
+                
+                uint8_t p_lo = ppuRead(ptrn_addr);
+                uint8_t p_hi = ppuRead(ptrn_addr + 8);
+                uint8_t bit = 0x80 >> diff_x;
+                uint8_t pix = ((p_hi & bit) ? 2 : 0) | ((p_lo & bit) ? 1 : 0);
+                
+                if (pix != 0) {
+                    sp_pixel = pix;
+                    sp_palette = (sprite.attribute & 0x03) + 4;
+                    sp_priority = (sprite.attribute & 0x20) == 0;
+                    
+                    // Exact check using the flag
+                    if (sprite.isZero) {
+                        sp_0_rendered = true;
+                    }
+                    
+                    break; 
+                }
+            }
+        }
+    }
+
+    // Sprite Zero Hit Detection
+    if (bg_opaque && sp_0_rendered && (ppumask & 0x18) && (ppumask & 0x10)) {
+        // Left-side clipping (first 8 pixels) prevents hit if configured
+        if (!((ppumask & 0x06) != 0x06 && (cycle - 1) < 8)) {
+             if (cycle != 256) { // Sprite 0 hit doesn't happen at x=255
+                 ppustatus |= 0x40;
+             }
+        }
+    }
+
+    uint32_t final_color = 0;
+    if (bg_pixel == 0 && sp_pixel == 0) final_color = getColorFromPaletteRam(0, 0);
+    else if (bg_pixel == 0 && sp_pixel > 0) final_color = getColorFromPaletteRam(sp_palette, sp_pixel);
+    else if (bg_pixel > 0 && sp_pixel == 0) final_color = getColorFromPaletteRam(bg_palette, bg_pixel);
+    else {
+        if (sp_priority) {
+            final_color = getColorFromPaletteRam(sp_palette, sp_pixel);
+        } else {
+            final_color = getColorFromPaletteRam(bg_palette, bg_pixel);
+        }
+    }
+
+    int idx = scanline * 256 + (cycle - 1);
+#ifdef UNIT_TEST
+    if (idx >= 0 && idx < 256 * 240) {
+        pixels[idx] = final_color;
+        debug_bg_pixel[idx] = bg_pixel;
+        debug_bg_palette[idx] = bg_palette;
+        debug_sp_pixel[idx] = sp_pixel;
+        debug_sp_palette[idx] = sp_palette;
+        debug_write_cycle[idx] = master_cycle;
+        debug_write_scanline[idx] = scanline;
+        debug_write_vram[idx] = v_ram_addr;
+    }
+#else
+    if (idx >= 0 && idx < 256 * 240) {
+        pixels[idx] = final_color;
+    }
+#endif
+}
+
+uint32_t PPU::getColorFromPaletteRam(uint8_t palette, uint8_t pixel) {
+    uint16_t addr = 0x3F00 + (palette * 4) + pixel;
+    return systemPalette[ppuRead(addr) & 0x3F];
+}
+
+uint8_t PPU::ppuRead(uint16_t address) {
+    address &= 0x3FFF;
+    if (address < 0x2000) return chrROM[address]; 
+    if (address < 0x3F00) { 
+        address &= 0x0FFF;
+        
+        if (mirroring == Mirroring::VERTICAL) {
+            return tblName[address & 0x07FF];
+        } 
+        else if (mirroring == Mirroring::HORIZONTAL) {
+            // FIX APPLIED HERE: Mask with 0x03FF
+            if (address & 0x0800) {
+                return tblName[0x0400 + (address & 0x03FF)]; 
+            } else {
+                return tblName[address & 0x03FF];
+            }
+        }
+    }
+    if (address >= 0x3F00) { 
+        address &= 0x001F;
+        // Palette mirrors: 0x3F10/14/18/1C mirror to 0x3F00/04/08/0C
+        if ((address & 0x03) == 0) address &= 0x0F;
+        return tblPalette[address];
+    }
+    return 0;
+}
+
+void PPU::ppuWrite(uint16_t address, uint8_t data) {
+    address &= 0x3FFF;
+    if (address < 0x2000) chrROM[address] = data; 
+    else if (address < 0x3F00) {
+        address &= 0x0FFF;
+        
+        if (mirroring == Mirroring::VERTICAL) {
+            tblName[address & 0x07FF] = data;
+        } 
+        else if (mirroring == Mirroring::HORIZONTAL) {
+            // FIX APPLIED HERE: Mask with 0x03FF
+            if (address & 0x0800) {
+                tblName[0x0400 + (address & 0x03FF)] = data; 
+            } else {
+                tblName[address & 0x03FF] = data;
+            }
+        }
+    }
+    else if (address >= 0x3F00) {
+        address &= 0x001F;
+        // Palette mirrors; ensure 0x3F10/14/18/1C map to 0x3F00/04/08/0C
+        if ((address & 0x03) == 0) address &= 0x0F;
+        tblPalette[address] = data;
+    }
+}
+
+std::vector<uint32_t> PPU::getNametable(uint8_t i, uint8_t /*unused_palette*/) {
+    std::vector<uint32_t> nt_visual(256 * 240);
+    
+    // Nametable base address (e.g., $2000)
+    uint16_t base_addr = 0x2000 + (i * 0x400);
+
+    for (int y = 0; y < 30; y++) {
+        for (int x = 0; x < 32; x++) {
+            
+            // 1. Calculate Virtual Address for Tile
+            uint16_t tile_addr = base_addr + (y * 32) + x;
+            uint8_t id = ppuRead(tile_addr);
+            
+            // 2. Calculate Virtual Address for Attribute
+            // (Screen is split into 4x4 tile groups)
+            uint16_t attr_addr = 0x23C0 + (i * 0x400) + ((y / 4) * 8) + (x / 4);
+            uint8_t attr_byte = ppuRead(attr_addr);
+            
+            // 3. Extract the 2-bit palette index for this 2x2 quadrant
+            bool bottom = (y % 4) >= 2;
+            bool right  = (x % 4) >= 2;
+            uint8_t shift = (bottom ? 4 : 0) | (right ? 2 : 0);
+            uint8_t palette_idx = (attr_byte >> shift) & 0x03;
+
+            // 4. Read Pattern Data
+            uint16_t bg_pattern_base = (ppuctrl & 0x10) ? 0x1000 : 0x0000;
+            
+            for (int row = 0; row < 8; row++) {
+                uint8_t p_lo = ppuRead(bg_pattern_base + (id * 16) + row);
+                uint8_t p_hi = ppuRead(bg_pattern_base + (id * 16) + row + 8);
+                
+                for (int col = 0; col < 8; col++) {
+                    uint8_t pixel = ((p_lo & 0x80) > 0) | (((p_hi & 0x80) > 0) << 1);
+                    p_lo <<= 1; p_hi <<= 1;
+                    
+                    // Use the extracted palette_idx, NOT the function argument
+                    uint32_t color = getColorFromPaletteRam(palette_idx, pixel);
+                    
+                    int p_x = x * 8 + col;
+                    int p_y = y * 8 + row;
+                    nt_visual[p_y * 256 + p_x] = color;
+                }
+            }
+        }
+    }
+    return nt_visual;
+}
+
+void PPU::test_renderCHR() {
+    // Clear screen to black first
+    std::fill(pixels.begin(), pixels.end(), 0xFF000000);
+
+    // Hardcoded high-contrast palette for debugging (Black, Dk Grey, Lt Grey, White)
+    // Using standard NES system palette indices: 0x0F (Black), 0x00 (Dk Grey), 0x10 (Lt Grey), 0x30 (White)
+    const uint32_t debugPalette[4] = { systemPalette[0x0F], systemPalette[0x00], systemPalette[0x10], systemPalette[0x30] };
+
+    // Loop through both Pattern Tables (0 and 1)
+    // Table 0 starts at 0x0000, Table 1 starts at 0x1000
+    for (int table = 0; table < 2; table++) {
+        
+        // Iterate through 256 tiles per table (16x16 grid)
+        for (int tileY = 0; tileY < 16; tileY++) {
+            for (int tileX = 0; tileX < 16; tileX++) {
+                
+                // Calculate memory offset for this tile
+                int tileOffset = tileY * 16 + tileX;
+                int tableOffset = table * 4096; // 0x0000 or 0x1000
+
+                // Loop through 8 rows of pixels in the tile
+                for (int row = 0; row < 8; row++) {
+                    
+                    // Read the two bit planes
+                    // Plane 0 is at offset
+                    // Plane 1 is at offset + 8 bytes
+                    uint8_t tile_lsb = chrROM[tableOffset + tileOffset * 16 + row];
+                    uint8_t tile_msb = chrROM[tableOffset + tileOffset * 16 + row + 8];
+
+                    // Loop through 8 pixels in the row
+                    for (int col = 0; col < 8; col++) {
+                        // Extract bits. We process from MSB (left) to LSB (right)
+                        // If we are at col 0, we want bit 7.
+                        uint8_t pixel = ((tile_lsb & 0x80) > 0) | (((tile_msb & 0x80) > 0) << 1);
+
+                        // Shift for next iteration
+                        tile_lsb <<= 1;
+                        tile_msb <<= 1;
+
+                        // Calculate Screen Coordinates
+                        // Table 0 goes to X=0..127, Table 1 goes to X=128..255
+                        int x = (table * 128) + (tileX * 8) + col;
+                        int y = (tileY * 8) + row;
+
+                        // Draw to the 1D pixel buffer
+                        // Ensure we don't write out of bounds (though 256x128 fits in 256x240)
+                        if (x < 256 && y < 240) {
+                            pixels[y * 256 + x] = debugPalette[pixel];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
