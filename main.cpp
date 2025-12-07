@@ -33,8 +33,8 @@ int main(int argc, char** argv) {
     std::vector<char> buffer(size);
     if (!file.read(buffer.data(), size)) return 1;
 
-    // Basic iNES Header Parser
-    if (buffer[0] == 'N' && buffer[1] == 'E') {
+    // iNES Header Parser
+    if (buffer[0] == 'N' && buffer[1] == 'E' && buffer[2] == 'S' && buffer[3] == 0x1A) {
         int prg_chunks = buffer[4];
         int chr_chunks = buffer[5];
         bool vertical = (buffer[6] & 0x01);
@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
         bus.ppu.setMirroring(vertical ? PPU::Mirroring::VERTICAL : PPU::Mirroring::HORIZONTAL);
         
         std::vector<uint8_t> prg(prg_chunks * 16384);
+
         int offset = 16 + ((buffer[6] & 0x04) ? 512 : 0);
         std::memcpy(prg.data(), &buffer[offset], prg.size());
         bus.loadROM(prg, prg_chunks == 1);
@@ -57,15 +58,15 @@ int main(int argc, char** argv) {
     core.init();
     
     std::signal(SIGINT, signal_handler);
+    bool frame_complete;
 
-    while (g_signal_received == 0) {
-        bool frame_complete = false;
-        
+
+    while (g_signal_received == 0) {        
         // Emulation Loop
+        frame_complete = false;
         while (!frame_complete) {
             core.step();
             // Run PPU 3 times per CPU cycle
-            // NOTE: dma_cycles must be consumed if DMA happened
             int cycles = (core.last_cycles + bus.dma_cycles) * 3;
             bus.dma_cycles = 0;
             

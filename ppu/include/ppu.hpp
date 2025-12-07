@@ -67,6 +67,10 @@ class PPU {
     #endif
 
     private:
+        bool suppress_vbl = false;
+        uint32_t applyGrayscale(uint32_t color);
+        uint32_t applyEmphasis(uint32_t color);
+        
         // --- Memory ---
         std::array<uint8_t, 2048> tblName;
         std::array<uint8_t, 32> tblPalette;
@@ -111,6 +115,15 @@ class PPU {
         uint8_t bg_next_tile_lsb = 0x00;
         uint8_t bg_next_tile_msb = 0x00;
 
+        // --- Internal Variables ---
+        uint8_t bg_pixel = 0x00;
+        uint8_t bg_palette = 0x00;
+        bool bg_opaque = false;
+        uint8_t sp_pixel = 0x00;
+        uint8_t sp_palette = 0x00;
+        bool sp_priority = false; 
+        bool sp_0_rendered = false;
+
         // --- Sprite Rendering State ---
         struct ObjectAttrEntry {
             uint8_t y;
@@ -153,7 +166,5 @@ class PPU {
         void updateShifters();
         
         void renderPixel();
-        
-        // NEW: Sprite Evaluation for the next line
         void evaluateSprites(); 
 };
