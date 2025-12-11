@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <type_traits>
 #include "core.hpp"
+#include "common.hpp"
 
 // =============================================================
 // ADDRESSING MODES
@@ -244,7 +245,7 @@ struct Op_ADC {
         // 1. Calculate Binary Sum
         std::uint16_t binarySum = a + v + carry;
 
-        if (core.getStatusFlag(Core::StatusFlag::D)) {
+        if (core.getStatusFlag(Core::StatusFlag::D) && !NES) {
             // --- DECIMAL MODE LOGIC (NMOS 6502) ---
             
             // 2. Z Flag: Derived directly from the BINARY sum
@@ -330,7 +331,7 @@ struct Op_SBC {
         core.setStatusFlag(Core::StatusFlag::Z, (diff & 0xFF) == 0);
         core.setStatusFlag(Core::StatusFlag::N, (diff & 0x80) != 0);
 
-        if (core.getStatusFlag(Core::StatusFlag::D)) {
+        if (core.getStatusFlag(Core::StatusFlag::D) && !NES) {
             // --- DECIMAL MODE LOGIC ---
             
             // We must treat nibbles independently to prevent borrow propagation
@@ -751,7 +752,7 @@ struct Op_ARR {
         bool bit5 = (result & 0x20) != 0;
         core.setStatusFlag(Core::StatusFlag::V, bit6 ^ bit5);
 
-        if (core.getStatusFlag(Core::StatusFlag::D)) {
+        if (core.getStatusFlag(Core::StatusFlag::D) && !NES) {
             // --- DECIMAL MODE FIXUP ---
             // The checks use the *Intermediate AND* value (temp), not the ROR result.
             
