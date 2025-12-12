@@ -1,8 +1,5 @@
-High Priority -
-1. OAM DMA transfer at $4014
-2. PPU rendering model and training
+<h1>Architectural Issues</h1>
 
-Medium Priority -
-1. PPU and Renderer coupling
-2. Controller 2 support
-3. Sprite zero hit calculation
+Issues that can't be fixed with a simple "hack". Need to refactor the entire project.
+
+* If the RDY line goes low 2 cycles before the write cycle, the target address of the instruction was not correct. (SHA, SHX, SHY, and SHS)
