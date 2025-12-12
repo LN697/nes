@@ -1,8 +1,0 @@
-Device Info -
-    1. NES Emulator
-    2. Vsync enabled by default
-    3. Delay in input by a frame
-
-ROMs supported - Add more by implementing memory mapping functionality
-    1. Super Mario Bros
-    2. NES Test
