@@ -76,26 +76,32 @@ int main(int argc, char** argv) {
 
         bus.input.update();
         
-        // Emulation Loop
+        // --- INTERLEAVED EXECUTION LOOP ---
+        // Instead of running CPU for a whole frame, we run it for ONE instruction.
+        // Then we run the PPU for 3x that amount. This keeps them in sync.
         frame_complete = false;
         while (!frame_complete) {
+            // 1. Run CPU (returns after 1 instruction, e.g., 2-7 cycles)
             core.step();
             
-            // Calculate total CPU cycles consumed
+            // 2. Account for CPU cycles + any DMA cycles that occurred
             cpu_cycles = core.last_cycles + bus.dma_cycles;
             
-            // Clock APU
+            // 3. Clock APU (Runs at CPU speed)
             bus.apu.step(cpu_cycles);
 
-            // Clock PPU
+            // 4. Clock PPU (Runs at 3x CPU speed)
             ppu_cycles = cpu_cycles * 3;
             
+            // Reset DMA counter (it was consumed by this step)
             bus.dma_cycles = 0;
             
+            // 5. Run PPU
+            // returns true only when VBlank starts (Scanline 241, Cycle 1)
             frame_complete = bus.ppu.step(ppu_cycles);
         }
 
-        // Render
+        // Render the frame that was just completed by the PPU
         if (!renderer.handleEvents()) break;
         renderer.draw(bus.ppu.getScreen());
 
@@ -103,7 +109,6 @@ int main(int argc, char** argv) {
         frame_end = clock::now();
         frame_duration = frame_end - frame_start;
         
-        // If the frame processed faster than 16.67ms, sleep for the remainder.
         if (frame_duration < target_frame_duration) {
             std::this_thread::sleep_for(target_frame_duration - frame_duration);
         }

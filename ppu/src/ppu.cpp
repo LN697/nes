@@ -292,12 +292,13 @@ bool PPU::step(int cycles) {
                  cycle = 1; 
             }
 
-            // --- RENDER ---
+            // --- RENDER PIXEL ---
+            // This is the core of "Cycle-Accurate" rendering. We draw exactly one dot per cycle.
             if (scanline >= 0 && scanline <= 239 && cycle >= 1 && cycle <= 256) {
                 renderPixel();
             }
 
-            // --- PIPELINE ---
+            // --- PIPELINE (Shift Registers & Fetches) ---
             if ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336)) {
                 updateShifters();
                 
@@ -349,7 +350,7 @@ bool PPU::step(int cycles) {
                 loadBackgroundShifters();
                 if (ppumask & 0x18) transferAddressX();
                 
-                // Sprite Eval for next line
+                // Sprite Eval for next line (Prepares spriteScanline vector)
                 if (scanline >= -1 && scanline < 239) evaluateSprites();
             }
 
@@ -358,13 +359,13 @@ bool PPU::step(int cycles) {
             }
         }
 
-        // --- VBLANK ---
+        // --- VBLANK START ---
         if (scanline == 241 && cycle == 1) {
             if (!suppress_vbl) {
                 ppustatus |= 0x80;
                 if (ppuctrl & 0x80) nmiOccurred = true;
             }
-            frame_done = true;
+            frame_done = true; // Signal Main Loop that VBlank started
             frame_count++;
         }
 
@@ -376,7 +377,7 @@ bool PPU::step(int cycles) {
             
             if (scanline >= 261) {
                 scanline = -1;
-                frame_complete = true;
+                // frame_done is NOT set here; it's set at VBlank start (241)
             }
         }
     }
@@ -406,6 +407,8 @@ void PPU::evaluateSprites() {
                 entry.id = oamData[i * 4 + 1];
                 entry.attribute = oamData[i * 4 + 2];
                 entry.x = oamData[i * 4 + 3];
+                // Critical for Sprite 0 Hit:
+                // We mark if this sprite entry corresponds to OAM index 0
                 entry.isZero = (i == 0);
                 
                 if (i == 0) next_sprite_zero_hit = true;
@@ -497,6 +500,7 @@ void PPU::renderPixel() {
                         sp_pixel = pix;
                         sp_palette = (sprite.attribute & 0x03) + 4;
                         sp_priority = (sprite.attribute & 0x20) == 0;
+                        // Sprite 0 Hit detection helper
                         if (sprite.isZero) sp_0_rendered = true;
                         break; 
                     }
@@ -506,10 +510,13 @@ void PPU::renderPixel() {
     }
 
     // --- 3. SPRITE ZERO HIT ---
+    // Occurs when an opaque background pixel overlaps an opaque Sprite 0 pixel.
+    // Must be at x < 255.
     if (bg_opaque && sp_0_rendered && (ppumask & 0x18) == 0x18) {
+        // Ensure we respect left-side clipping if enabled
         if (!((ppumask & 0x06) != 0x06 && x < 8)) {
             if (x < 255) {
-                ppustatus |= 0x40;
+                ppustatus |= 0x40; // Set Flag
             }
         }
     }
