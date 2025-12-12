@@ -17,7 +17,7 @@ bool Renderer::init(const char* title, int width, int height, int scale) {
                               width * scale, height * scale, SDL_WINDOW_SHOWN);
     if (!window) return false;
 
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) return false;
 
     SDL_RenderSetLogicalSize(renderer, width, height);

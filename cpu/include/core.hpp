@@ -20,6 +20,10 @@ class Core {
         Bus* bus;
         Phase core_phase;
 
+        // Variables
+        uint8_t opcode, sp, status;
+        uint16_t pc_val, lo, hi;
+
     public:
         Register a;
         Register x;

@@ -33,6 +33,11 @@ void Bus::setTestMode(bool enabled) {
     testMode = enabled;
 }
 
+bool Bus::getIRQ() const {
+    return apu.irq_asserted;
+    // Note: Mapper IRQs would also be OR'd here
+}
+
 uint8_t Bus::read(uint16_t address) {
     if (testMode) return testRam[address];
 
@@ -50,6 +55,9 @@ uint8_t Bus::read(uint16_t address) {
     }
     // 3. APU & I/O ($4000 - $4017)
     else if (address < 0x4018) {
+        if (address == 0x4015) {
+            return apu.cpuRead(address);
+        }
         return 0; 
     }
     // 4. Cartridge Space ($4020 - $FFFF)
@@ -87,7 +95,9 @@ void Bus::write(uint16_t address, uint8_t data) {
     } else if (address == 0x4016) {
         input.write(data);
     } else if (address < 0x4018) {
-        // APU & I/O ($4000 - $4017)
+        // APU Registers $4000-$4013, $4015, $4017
+        // $4014 is DMA handled above, $4016 is Input handled above
+        apu.cpuWrite(address, data);
     } else if (address >= 0x4020) {
         // Mapper writes would go here
     }

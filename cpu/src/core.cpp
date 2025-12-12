@@ -45,8 +45,8 @@ void Core::step() {
         bus->ppu.nmiOccurred = false;
 
         // --- NMI HARDWARE SEQUENCE (7 Cycles) ---
-        uint16_t pc_val = static_cast<uint16_t>(pc.getValue());
-        uint8_t sp = static_cast<uint8_t>(s.getValue());
+        pc_val = static_cast<uint16_t>(pc.getValue());
+        sp = static_cast<uint8_t>(s.getValue());
         
         bus->write(0x0100 | sp, (pc_val >> 8) & 0xFF);
         s.setValue(sp - 1);
@@ -56,32 +56,57 @@ void Core::step() {
         s.setValue(sp - 1);
         sp--;
 
-        // CRITICAL: For Hardware Interrupts (NMI/IRQ), the B-Flag (Bit 4) is CLEARED on the stack.
-        // Bit 5 (Unused) is always SET.
-        uint8_t status = static_cast<uint8_t>(p.getValue());
+        // NMI Stack push of P: B-Flag cleared, Bit 5 set
+        status = static_cast<uint8_t>(p.getValue());
         status &= ~0x10;
         status |= 0x20;
         
         bus->write(0x0100 | sp, status);
         s.setValue(sp - 1);
         
-        // The CPU ignores further IRQs inside an interrupt handler.
-        // (NMIs can still interrupt an NMI, technically, but PPU logic prevents this loop)
         setStatusFlag(StatusFlag::I, true);
         
-        uint16_t lo = bus->read(0xFFFA);
-        uint16_t hi = bus->read(0xFFFB);
+        lo = bus->read(0xFFFA);
+        hi = bus->read(0xFFFB);
         pc.setValue((hi << 8) | lo);
 
-        // NMI takes 7 cycles.
         last_cycles = 7; 
-
-        // log("CORE", "NMI Triggered. PC set to: " + std::to_string(pc.getValue()));
-        
         return; 
     }
+    
+    // IRQ Check
+    // IRQs are level-triggered. Executed if I flag is Clear.
+    if (!getStatusFlag(StatusFlag::I) && bus->getIRQ()) {
+        pc_val = static_cast<uint16_t>(pc.getValue());
+        sp = static_cast<uint8_t>(s.getValue());
+        
+        bus->write(0x0100 | sp, (pc_val >> 8) & 0xFF);
+        s.setValue(sp - 1);
+        sp--;
 
-    uint8_t opcode = fetch();
+        bus->write(0x0100 | sp, pc_val & 0xFF);
+        s.setValue(sp - 1);
+        sp--;
+
+        // IRQ Stack push of P: B-Flag cleared, Bit 5 set
+        status = static_cast<uint8_t>(p.getValue());
+        status &= ~0x10;
+        status |= 0x20;
+        
+        bus->write(0x0100 | sp, status);
+        s.setValue(sp - 1);
+        
+        setStatusFlag(StatusFlag::I, true);
+        
+        lo = bus->read(0xFFFE);
+        hi = bus->read(0xFFFF);
+        pc.setValue((hi << 8) | lo);
+
+        last_cycles = 7;
+        return;
+    }
+
+    opcode = fetch();
     //log("CORE", "Opcode: " + std::to_string(opcode));
 
     if (instr_table[opcode]) {

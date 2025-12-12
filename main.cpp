@@ -59,24 +59,54 @@ int main(int argc, char** argv) {
     
     std::signal(SIGINT, signal_handler);
     bool frame_complete;
+    int ppu_cycles;
+    int cpu_cycles;
 
+    // --- TIMING SETUP ---
+    using clock = std::chrono::high_resolution_clock;
+    auto frame_start = clock::now();
+    auto frame_end = clock::now();
+    auto frame_duration = frame_end - frame_start;
 
-    while (g_signal_received == 0) {        
+    // Target 60 FPS (approx 16.67ms per frame)
+    const std::chrono::nanoseconds target_frame_duration(16666667); 
+
+    while (g_signal_received == 0) {
+        frame_start = clock::now();
+
+        bus.input.update();
+        
         // Emulation Loop
         frame_complete = false;
         while (!frame_complete) {
             core.step();
-            // Run PPU 3 times per CPU cycle
-            int cycles = (core.last_cycles + bus.dma_cycles) * 3;
+            
+            // Calculate total CPU cycles consumed
+            cpu_cycles = core.last_cycles + bus.dma_cycles;
+            
+            // Clock APU
+            bus.apu.step(cpu_cycles);
+
+            // Clock PPU
+            ppu_cycles = cpu_cycles * 3;
+            
             bus.dma_cycles = 0;
             
-            frame_complete = bus.ppu.step(cycles);
+            frame_complete = bus.ppu.step(ppu_cycles);
         }
 
         // Render
         if (!renderer.handleEvents()) break;
-        bus.input.update();
         renderer.draw(bus.ppu.getScreen());
+
+        // --- FRAME LIMITER ---
+        frame_end = clock::now();
+        frame_duration = frame_end - frame_start;
+        
+        // If the frame processed faster than 16.67ms, sleep for the remainder.
+        if (frame_duration < target_frame_duration) {
+            std::this_thread::sleep_for(target_frame_duration - frame_duration);
+        }
     }
 
     return 0;
