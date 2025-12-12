@@ -2,10 +2,6 @@
 #include <cstring>
 #include <algorithm>
 
-// =============================================================
-// STATIC DATA
-// =============================================================
-
 const std::array<uint32_t, 64> PPU::systemPalette = {{
     0xFF7C7C7C, 0xFF0000FC, 0xFF0000BC, 0xFF4428BC, 0xFF940084, 0xFFA80020, 0xFFA81000, 0xFF881400,
     0xFF503000, 0xFF007800, 0xFF006800, 0xFF005800, 0xFF004058, 0xFF000000, 0xFF000000, 0xFF000000,
@@ -17,10 +13,6 @@ const std::array<uint32_t, 64> PPU::systemPalette = {{
     0xFFF8D878, 0xFFD8F878, 0xFFB8F8B8, 0xFFB8F8D8, 0xFF00FCFC, 0xFFF8D8F8, 0xFF000000, 0xFF000000
 }};
 
-// =============================================================
-// CONSTRUCTOR / DESTRUCTOR
-// =============================================================
-
 PPU::PPU() {
     tblName.fill(0);
     tblPalette.fill(0);
@@ -28,40 +20,31 @@ PPU::PPU() {
     pixels.resize(256 * 240);
     pixels.assign(256 * 240, 0xFF000000);
     spriteScanline.reserve(8);
-    
-    mirroring = Mirroring::VERTICAL;
-    
-    // Power-up state
-    ppuctrl = 0x00;
-    ppumask = 0x00;
-    ppustatus = 0xA0; // VBlank set, sprite overflow set
-    oamaddr = 0x00;
+    reset();
 }
 
 PPU::~PPU() = default;
 
-// =============================================================
-// CONFIGURATION
-// =============================================================
-
-void PPU::setMirroring(Mirroring mode) { 
-    mirroring = mode; 
+void PPU::connectCartridge(const std::shared_ptr<Cartridge>& cartridge) {
+    this->cart = cartridge;
 }
 
-void PPU::setCHR(const std::vector<uint8_t>& rom) {
-    chrROM = rom; 
-    if (chrROM.size() < 8192) {
-        chrROM.resize(8192); 
-    }
+void PPU::reset() {
+    ppuctrl = 0x00;
+    ppumask = 0x00;
+    ppustatus = 0xA0;
+    oamaddr = 0x00;
+    v_ram_addr = 0;
+    t_ram_addr = 0;
+    ppu_data_buffer = 0;
+    scanline = 0;
+    cycle = 0;
+    frame_count = 0;
+    frame_complete = false;
 }
 
-const std::vector<uint32_t>& PPU::getScreen() const { 
-    return pixels;
-}
-
-const std::array<uint8_t, 256>& PPU::getOAM() const { 
-    return oamData;
-}
+const std::vector<uint32_t>& PPU::getScreen() const { return pixels; }
+const std::array<uint8_t, 256>& PPU::getOAM() const { return oamData; }
 
 // =============================================================
 // MEMORY INTERFACE
@@ -69,31 +52,38 @@ const std::array<uint8_t, 256>& PPU::getOAM() const {
 
 uint8_t PPU::ppuRead(uint16_t address) {
     address &= 0x3FFF;
-    
-    if (address < 0x2000) {
-        return chrROM[address]; 
+    uint8_t data = 0;
+
+    // 1. Cartridge (Pattern Tables $0000-$1FFF)
+    if (cart->ppuRead(address, data)) {
+        return data;
     }
     
-    if (address < 0x3F00) { 
+    // 2. Nametables ($2000-$3EFF)
+    else if (address >= 0x2000 && address < 0x3F00) { 
         address &= 0x0FFF;
-        if (mirroring == Mirroring::VERTICAL) {
+        
+        // Dynamic Mirroring from Cartridge
+        MirrorMode mode = cart->getMirroring();
+        
+        if (mode == MirrorMode::VERTICAL) {
             return tblName[address & 0x07FF];
         } 
-        else if (mirroring == Mirroring::HORIZONTAL) {
+        else if (mode == MirrorMode::HORIZONTAL) {
             if (address & 0x0800) return tblName[0x0400 + (address & 0x03FF)]; 
             else return tblName[address & 0x03FF];
         }
-        else if (mirroring == Mirroring::ONE_SCREEN_LOW) {
+        else if (mode == MirrorMode::ONESCREEN_LO) {
             return tblName[address & 0x03FF];
         }
-        else if (mirroring == Mirroring::ONE_SCREEN_HIGH) {
+        else if (mode == MirrorMode::ONESCREEN_HI) {
             return tblName[0x0400 + (address & 0x03FF)];
         }
     }
-    
-    if (address >= 0x3F00) { 
+    // 3. Palette ($3F00-$3FFF)
+    else if (address >= 0x3F00) { 
         address &= 0x001F;
-        if ((address & 0x03) == 0) address &= 0x0F;
+        if ((address & 0x03) == 0) address &= 0x0F; // Mirror bg colors
         return tblPalette[address];
     }
     
@@ -103,25 +93,31 @@ uint8_t PPU::ppuRead(uint16_t address) {
 void PPU::ppuWrite(uint16_t address, uint8_t data) {
     address &= 0x3FFF;
     
-    if (address < 0x2000) {
-        chrROM[address] = data; 
+    // 1. Cartridge (CHR RAM if present)
+    if (cart->ppuWrite(address, data)) {
+        return;
     }
-    else if (address < 0x3F00) {
+    // 2. Nametables
+    else if (address >= 0x2000 && address < 0x3F00) {
         address &= 0x0FFF;
-        if (mirroring == Mirroring::VERTICAL) {
+        
+        MirrorMode mode = cart->getMirroring();
+        
+        if (mode == MirrorMode::VERTICAL) {
             tblName[address & 0x07FF] = data;
         } 
-        else if (mirroring == Mirroring::HORIZONTAL) {
+        else if (mode == MirrorMode::HORIZONTAL) {
             if (address & 0x0800) tblName[0x0400 + (address & 0x03FF)] = data; 
             else tblName[address & 0x03FF] = data;
         }
-        else if (mirroring == Mirroring::ONE_SCREEN_LOW) {
+        else if (mode == MirrorMode::ONESCREEN_LO) {
             tblName[address & 0x03FF] = data;
         }
-        else if (mirroring == Mirroring::ONE_SCREEN_HIGH) {
+        else if (mode == MirrorMode::ONESCREEN_HI) {
             tblName[0x0400 + (address & 0x03FF)] = data;
         }
     }
+    // 3. Palette
     else if (address >= 0x3F00) {
         address &= 0x001F;
         if ((address & 0x03) == 0) address &= 0x0F;
@@ -138,16 +134,7 @@ uint8_t PPU::cpuRead(uint16_t address) {
     switch (address & 0x0007) {
         case 0x0002: // STATUS
             data = (ppustatus & 0xE0) | (ppu_data_buffer & 0x1F);
-            
-            // VBlank suppression if read on exact cycle of VBlank set
-            if (scanline == 241 && cycle == 1) {
-                ppustatus &= ~0x80;
-                nmiOccurred = false;
-                suppress_vbl = true;
-            } else {
-                ppustatus &= ~0x80;
-            }
-            
+            ppustatus &= ~0x80; // Clear VBlank
             address_latch = false;
             break;
         case 0x0004: // OAM DATA
@@ -293,7 +280,6 @@ bool PPU::step(int cycles) {
             }
 
             // --- RENDER PIXEL ---
-            // This is the core of "Cycle-Accurate" rendering. We draw exactly one dot per cycle.
             if (scanline >= 0 && scanline <= 239 && cycle >= 1 && cycle <= 256) {
                 renderPixel();
             }
@@ -336,12 +322,10 @@ bool PPU::step(int cycles) {
                 }
             }
 
-            // Idle fetches on cycles 337-340
             if (cycle == 337 || cycle == 339) {
                 bg_next_tile_id = ppuRead(0x2000 | (v_ram_addr & 0x0FFF));
             }
 
-            // --- END OF LINE HOUSEKEEPING ---
             if (cycle == 256) {
                 if (ppumask & 0x18) incrementScrollY();
             }
@@ -349,8 +333,6 @@ bool PPU::step(int cycles) {
             if (cycle == 257) {
                 loadBackgroundShifters();
                 if (ppumask & 0x18) transferAddressX();
-                
-                // Sprite Eval for next line (Prepares spriteScanline vector)
                 if (scanline >= -1 && scanline < 239) evaluateSprites();
             }
 
@@ -365,28 +347,21 @@ bool PPU::step(int cycles) {
                 ppustatus |= 0x80;
                 if (ppuctrl & 0x80) nmiOccurred = true;
             }
-            frame_done = true; // Signal Main Loop that VBlank started
+            frame_done = true;
             frame_count++;
         }
 
-        // --- CYCLE ADVANCE ---
         cycle++;
         if (cycle >= 341) {
             cycle = 0;
             scanline++;
-            
             if (scanline >= 261) {
                 scanline = -1;
-                // frame_done is NOT set here; it's set at VBlank start (241)
             }
         }
     }
     return frame_done;
 }
-
-// =============================================================
-// SPRITE EVALUATION
-// =============================================================
 
 void PPU::evaluateSprites() {
     spriteScanline.clear();
@@ -407,8 +382,6 @@ void PPU::evaluateSprites() {
                 entry.id = oamData[i * 4 + 1];
                 entry.attribute = oamData[i * 4 + 2];
                 entry.x = oamData[i * 4 + 3];
-                // Critical for Sprite 0 Hit:
-                // We mark if this sprite entry corresponds to OAM index 0
                 entry.isZero = (i == 0);
                 
                 if (i == 0) next_sprite_zero_hit = true;
@@ -416,17 +389,13 @@ void PPU::evaluateSprites() {
                 spriteScanline.push_back(entry);
                 sprite_count++;
             } else {
-                ppustatus |= 0x20; // Overflow
+                ppustatus |= 0x20; 
                 break; 
             }
         }
     }
     bSpriteZeroBeingRendered = next_sprite_zero_hit;
 }
-
-// =============================================================
-// RENDERING
-// =============================================================
 
 void PPU::renderPixel() {
     bg_pixel = 0x00;
@@ -435,7 +404,7 @@ void PPU::renderPixel() {
 
     int x = cycle - 1;
 
-    // --- 1. BACKGROUND ---
+    // --- BACKGROUND ---
     if (ppumask & 0x08) {
         if ((ppumask & 0x02) || (x >= 8)) {
             uint16_t bit_mux = 0x8000 >> fine_x;
@@ -451,7 +420,7 @@ void PPU::renderPixel() {
         }
     }
 
-    // --- 2. SPRITES ---
+    // --- SPRITES ---
     sp_pixel = 0x00;
     sp_palette = 0x00;
     sp_priority = false; 
@@ -466,26 +435,15 @@ void PPU::renderPixel() {
                     uint8_t height = (ppuctrl & 0x20) ? 16 : 8;
                     bool flip_h = sprite.attribute & 0x40;
                     bool flip_v = sprite.attribute & 0x80;
-                    
-                    // Calculate Y position
                     int diff_y = scanline - sprite.y;
                     
-                    // Apply Y-flip FIRST
-                    if (flip_v) {
-                        diff_y = height - 1 - diff_y;
-                    }
+                    if (flip_v) diff_y = height - 1 - diff_y;
+                    if (flip_h) diff_x = 7 - diff_x;
                     
-                    // Apply X-flip
-                    if (flip_h) {
-                        diff_x = 7 - diff_x;
-                    }
-                    
-                    // Calculate pattern address
                     uint16_t ptrn_addr;
                     if (height == 8) {
                         ptrn_addr = ((ppuctrl & 0x08) ? 0x1000 : 0x0000) + (sprite.id * 16) + diff_y;
                     } else {
-                        // 8x16 mode
                         int row = diff_y % 8;
                         int tile_offset = (diff_y >= 8) ? 1 : 0;
                         int tile_num = (sprite.id & 0xFE) + tile_offset;
@@ -500,7 +458,6 @@ void PPU::renderPixel() {
                         sp_pixel = pix;
                         sp_palette = (sprite.attribute & 0x03) + 4;
                         sp_priority = (sprite.attribute & 0x20) == 0;
-                        // Sprite 0 Hit detection helper
                         if (sprite.isZero) sp_0_rendered = true;
                         break; 
                     }
@@ -509,19 +466,16 @@ void PPU::renderPixel() {
         }
     }
 
-    // --- 3. SPRITE ZERO HIT ---
-    // Occurs when an opaque background pixel overlaps an opaque Sprite 0 pixel.
-    // Must be at x < 255.
+    // --- SPRITE ZERO HIT ---
     if (bg_opaque && sp_0_rendered && (ppumask & 0x18) == 0x18) {
-        // Ensure we respect left-side clipping if enabled
         if (!((ppumask & 0x06) != 0x06 && x < 8)) {
             if (x < 255) {
-                ppustatus |= 0x40; // Set Flag
+                ppustatus |= 0x40;
             }
         }
     }
 
-    // --- 4. COMPOSITING ---
+    // --- COMPOSITING ---
     uint32_t final_color;
     if (bg_pixel == 0 && sp_pixel == 0) {
         final_color = getColorFromPaletteRam(0, 0);
@@ -534,14 +488,8 @@ void PPU::renderPixel() {
                                   : getColorFromPaletteRam(bg_palette, bg_pixel);
     }
 
-    // Apply grayscale mode
-    if (ppumask & 0x01) {
-        final_color = applyGrayscale(final_color);
-    }
-
-    // Apply color emphasis
+    if (ppumask & 0x01) final_color = applyGrayscale(final_color);
     final_color = applyEmphasis(final_color);
-
     pixels[scanline * 256 + x] = final_color;
 }
 
@@ -565,10 +513,9 @@ uint32_t PPU::applyEmphasis(uint32_t color) {
     uint8_t g = (color >> 8) & 0xFF;
     uint8_t b = color & 0xFF;
     
-    // Emphasis bits reduce non-emphasized colors
-    if (!(emphasis & 0x01)) r = r * 3 / 4; // Emphasize red
-    if (!(emphasis & 0x02)) g = g * 3 / 4; // Emphasize green
-    if (!(emphasis & 0x04)) b = b * 3 / 4; // Emphasize blue
+    if (!(emphasis & 0x01)) r = r * 3 / 4;
+    if (!(emphasis & 0x02)) g = g * 3 / 4;
+    if (!(emphasis & 0x04)) b = b * 3 / 4;
     
     return 0xFF000000 | (r << 16) | (g << 8) | b;
 }

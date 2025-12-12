@@ -3,69 +3,76 @@
 
 Bus::Bus() {
     cpuRam.fill(0);
-    
-    testRam.resize(65536);
-    cartridgeROM.reserve(32768);
-
+    // Initialize PPU and APU if needed, though their ctors handle most of it.
     log("BUS", "Bus initialized.");
 }
 
 Bus::~Bus() = default;
 
-uint8_t Bus::readCartridge(uint16_t address) {
-    if (cartridgeROM.empty()) return 0;
+void Bus::insertCartridge(const std::shared_ptr<Cartridge>& cartridge) {
+    this->cart = cartridge;
+    ppu.connectCartridge(cartridge);
+}
 
-    if (address < 0x8000) return 0; 
-
-    uint32_t rom_address = address - 0x8000;
-    try {
-        if (rom_address < cartridgeROM.size()) {
-            return cartridgeROM.at(rom_address); 
-        }
-    } catch (...) {
-        return 0;
-    }
-    
-    return 0;
+void Bus::reset() {
+    cpuRam.fill(0);
+    ppu.reset();
+    apu.reset();
+    if (cart) cart->reset();
+    dma_cycles = 0;
 }
 
 void Bus::setTestMode(bool enabled) {
     testMode = enabled;
+    if (enabled) {
+        testRam.resize(65536);
+        std::fill(testRam.begin(), testRam.end(), 0);
+    }
 }
 
 bool Bus::getIRQ() const {
-    return apu.irq_asserted;
-    // Note: Mapper IRQs would also be OR'd here
+    // Combine APU IRQ with Mapper IRQ
+    bool cartIRQ = cart ? cart->getIRQ() : false;
+    return apu.irq_asserted || cartIRQ;
 }
 
 uint8_t Bus::read(uint16_t address) {
     if (testMode) return testRam[address];
 
-    // 1. Internal RAM ($0000 - $1FFF)
-    if (address < 0x2000) {
+    uint8_t data = 0x00;
+
+    // 1. Cartridge ($4020 - $FFFF)
+    if (cart && cart->cpuRead(address, data)) {
+        return data;
+    }
+    // 2. Internal RAM ($0000 - $1FFF)
+    else if (address < 0x2000) {
         return cpuRam[address & 0x07FF];
     }
-    // 2. PPU Registers ($2000 - $3FFF)
+    // 3. PPU Registers ($2000 - $3FFF)
     else if (address < 0x4000) {
         return ppu.cpuRead(address & 0x0007);
     }
-    // 2.5 Input Registers ($4016 - $4017)
+    // 4. Controller 1 ($4016)
     else if (address == 0x4016) {
+        // Only allow reading from the input object here.
+        // Reading shifts the register, so we must not do it for 4017.
         return input.read();
     }
-    // 3. APU & I/O ($4000 - $4017)
+    // 5. Controller 2 ($4017)
+    else if (address == 0x4017) {
+        // Return 0 for unconnected second controller
+        return 0x00;
+    }
+    // 6. APU ($4000 - $4017)
+    // Note: $4015 is status, others are mostly write-only.
     else if (address < 0x4018) {
         if (address == 0x4015) {
             return apu.cpuRead(address);
         }
-        return 0; 
     }
-    // 4. Cartridge Space ($4020 - $FFFF)
-    else if (address >= 0x4020) {
-        return readCartridge(address);
-    }
-    
-    return 0x00;
+
+    return data;
 }
 
 void Bus::write(uint16_t address, uint8_t data) {
@@ -74,41 +81,34 @@ void Bus::write(uint16_t address, uint8_t data) {
         return;
     }
 
-    if (address < 0x2000) {
+    if (cart && cart->cpuWrite(address, data)) {
+        // Cartridge handled the write (e.g. Mapper registers)
+        return;
+    }
+    else if (address < 0x2000) {
         cpuRam[address & 0x07FF] = data;
-    } else if (address < 0x4000) {
+    } 
+    else if (address < 0x4000) {
         ppu.cpuWrite(address & 0x0007, data);
-    } else if (address == 0x4014) {
-        // Writing XX copies 256 bytes from $XX00-$XXFF to OAM
+    } 
+    else if (address == 0x4014) {
+        // OAM DMA
         uint16_t page = static_cast<uint16_t>(data) << 8;
-        std::array<uint8_t, 256> pageData;       // Perform the copy instantly
+        std::array<uint8_t, 256> pageData;
         for (int i = 0; i < 256; ++i) {
-            // Read from CPU Bus (Usually RAM $0000-$07FF, but can be ROM)
             pageData[i] = read(page + i);
         }
-
         ppu.startOAMDMA(pageData);
-        
-        // Account for CPU pause
-        // DMA takes 513 or 514 cycles. We use 513 as a safe average.
+        // DMA timing is approx 513/514 cycles.
         dma_cycles = 513; 
-    } else if (address == 0x4016) {
+    } 
+    else if (address == 0x4016) {
+        // Strobe works for both, but usually physically wired to both ports' latch lines.
+        // Since we only emulate one input object, we write to it here.
         input.write(data);
-    } else if (address < 0x4018) {
-        // APU Registers $4000-$4013, $4015, $4017
-        // $4014 is DMA handled above, $4016 is Input handled above
+    } 
+    else if (address < 0x4018) {
+        // APU Registers, including $4017 (Frame Counter)
         apu.cpuWrite(address, data);
-    } else if (address >= 0x4020) {
-        // Mapper writes would go here
-    }
-}
-
-void Bus::loadROM(const std::vector<uint8_t>& prg, bool mirror_upper) {
-    cartridgeROM = prg;
-    if (mirror_upper && cartridgeROM.size() <= 16384) {
-        cartridgeROM.resize(32768);
-        for (size_t i = 0; i < 16384; ++i) {
-            cartridgeROM[16384 + i] = cartridgeROM[i];
-        }
     }
 }
