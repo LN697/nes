@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     // 1. Initialize Systems
     Bus bus;
     Renderer renderer;
-    if (!renderer.init("NES Emulator", 256, 240, 3)) return 1;
+    if (!renderer.init("NES Emulator", 256, 240, 1)) return 1;
 
     // 2. Load Cartridge
     auto cart = std::make_shared<Cartridge>(argv[1]);
